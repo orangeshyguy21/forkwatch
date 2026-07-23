@@ -488,6 +488,15 @@ export function IsometricChain() {
   const flyAmt = clamp((zoom - 1) / 1.3, 0, 1);
   const notReady = !initialized || tipHeight == null || pruneFloor == null;
 
+  // Knots-tip snap: the minority lane crawls, so its head is usually far below the Core tip and
+  // scrolls off-screen while following the race. When that head is off either viewport edge, pin a
+  // small jump button at that edge, on the lane's own x, wearing the lane's steel colour.
+  const knotsTipOff = useMemo<'above' | 'below' | null>(() => {
+    if (notReady || !forked || knotsTip == null || knotsTip <= forkAt) return null;
+    const y = project(knotsTip).y;
+    return y > H - 44 ? 'below' : y < 44 ? 'above' : null;
+  }, [notReady, forked, knotsTip, forkAt, project, H]);
+
   // Debounce the big fly-number: only reveal it once the flight has been sustained past
   // BIG_NUM_DEBOUNCE_MS (a quick flick won't flash it), and hide it the moment flying stops.
   const flying = flyAmt > BIG_NUM_FLY_ON;
@@ -662,6 +671,22 @@ export function IsometricChain() {
               </div>
             )}
           </div>
+        )}
+
+        {/* pinned jump to the off-screen Knots (minority) tip, sitting on that lane's x */}
+        {knotsTipOff && knotsTip != null && (
+          <button
+            onClick={() => setTarget(knotsTip, true)}
+            title={`Jump to orphaned-chain tip at ${heightLabel(knotsTip)}`}
+            className="absolute flex -translate-x-1/2 items-center gap-1.5 rounded-md border border-slate-400/40 bg-slate-500/15 px-2.5 py-1 font-mono text-[11px] font-bold tabular-nums text-slate-200 backdrop-blur transition hover:bg-slate-400/25"
+            style={{
+              left: baseX + LANE_GAP,
+              [knotsTipOff === 'below' ? 'bottom' : 'top']: 14,
+              zIndex: 3200,
+            }}
+          >
+            {knotsTipOff === 'below' ? '⤓' : '⤒'} {heightLabel(knotsTip)}
+          </button>
         )}
 
       </div>

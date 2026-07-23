@@ -34,7 +34,8 @@ export function clsx(...parts: Array<string | false | null | undefined>): string
 
 // Block-height format for the rails: no "#", no commas — digits grouped by 3 with a space.
 // 908160 -> "908 160", 896205 -> "896 205".
-export function fmtHeight(h: number): string {
+export function fmtHeight(h?: number | null): string {
+  if (h == null || Number.isNaN(h)) return '—';
   return Math.round(h)
     .toString()
     .replace(/\B(?=(\d{3})+(?!\d))/g, ' ');

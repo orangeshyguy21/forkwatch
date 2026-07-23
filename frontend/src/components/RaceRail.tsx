@@ -11,7 +11,7 @@
 // emerald = agreement, sky = merely syncing, amber = tip rejected, red = the split itself.
 
 import type { ChainState } from '../types';
-import { formatInt } from '../util';
+import { fmtHeight, formatInt } from '../util';
 
 const CENTER_X = 400;
 const MID_Y = 23;
@@ -78,7 +78,7 @@ export function RaceRail({ state }: { state: ChainState }) {
     const lc = prongLen(coreA, maxA);
     const lk = prongLen(knotsA, maxA);
     return (
-      <Rail label={`Chain split at ${formatInt(at)}: non-signaling ${coreA} ahead, signaling ${knotsA} ahead`}>
+      <Rail label={`Chain split at ${fmtHeight(at)}: non-signaling ${coreA} ahead, signaling ${knotsA} ahead`}>
         {/* the one chain, up to the fork height */}
         <line x1={40} y1={MID_Y} x2={CENTER_X} y2={MID_Y} stroke="rgba(248,113,113,0.35)" strokeWidth={2} />
         {/* square fork: vertical riser, then right-angle prongs */}
@@ -91,13 +91,13 @@ export function RaceRail({ state }: { state: ChainState }) {
         {/* Tip heights only. The stances live on the flanking panels and the "+N / +N" score is
             the hero's — the rail's job is the geometry. */}
         <RailText x={CENTER_X + lc + 10} y={TOP_Y + 3} fill="#67e8f9">
-          {formatInt(coreH)}
+          {fmtHeight(coreH)}
         </RailText>
         <RailText x={CENTER_X + lk + 10} y={BOT_Y + 4} fill="#94a3b8">
-          {formatInt(knotsH)}
+          {fmtHeight(knotsH)}
         </RailText>
         <RailText x={CENTER_X - 12} y={BOT_Y + 4} fill="#f87171" anchor="end">
-          ⑂ {formatInt(at)}
+          ⑂ {fmtHeight(at)}
         </RailText>
       </Rail>
     );
@@ -114,10 +114,10 @@ export function RaceRail({ state }: { state: ChainState }) {
           ✕
         </RailText>
         <RailText x={370} y={BOT_Y + 4} fill="#fbbf24" anchor="middle">
-          signaling {formatInt(knotsH)} · rejects tip
+          signaling {fmtHeight(knotsH)} · rejects tip
         </RailText>
         <RailText x={430} y={TOP_Y + 1} fill="#a1a1aa" anchor="middle">
-          non-signaling {formatInt(coreH)}
+          non-signaling {fmtHeight(coreH)}
         </RailText>
       </Rail>
     );
@@ -142,10 +142,10 @@ export function RaceRail({ state }: { state: ChainState }) {
         {/* Labels anchor OUTWARD from their dots — at a 1-block gap the dots nearly touch, and
             centred labels would type over each other. */}
         <RailText x={trail - 10} y={BOT_Y + 4} fill="#7dd3fc" anchor="end">
-          {knotsBehind ? 'signaling' : 'non-signaling'} {formatInt(Math.min(coreH, knotsH))}
+          {knotsBehind ? 'signaling' : 'non-signaling'} {fmtHeight(Math.min(coreH, knotsH))}
         </RailText>
         <RailText x={lead + 10} y={BOT_Y + 4} fill="#a1a1aa" anchor="start">
-          {knotsBehind ? 'non-signaling' : 'signaling'} {formatInt(Math.max(coreH, knotsH))}
+          {knotsBehind ? 'non-signaling' : 'signaling'} {fmtHeight(Math.max(coreH, knotsH))}
         </RailText>
       </Rail>
     );
@@ -153,12 +153,12 @@ export function RaceRail({ state }: { state: ChainState }) {
 
   // -------- AGREEMENT: one line, one shared tip --------
   return (
-    <Rail label={`One chain, both tips at ${formatInt(state.tip_height)}`}>
+    <Rail label={`One chain, both tips at ${fmtHeight(state.tip_height)}`}>
       <line x1={40} y1={MID_Y} x2={760} y2={MID_Y} stroke="rgba(52,211,153,0.22)" strokeWidth={2} />
       <circle cx={CENTER_X} cy={MID_Y} r={8} fill="rgba(52,211,153,0.2)" />
       <circle cx={CENTER_X} cy={MID_Y} r={3.5} fill="#34d399" />
       <RailText x={CENTER_X} y={BOT_Y + 5} fill="#71717a" anchor="middle">
-        one chain · both tips at {formatInt(state.tip_height)}
+        one chain · both tips at {fmtHeight(state.tip_height)}
       </RailText>
     </Rail>
   );

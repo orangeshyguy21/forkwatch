@@ -4,7 +4,7 @@ import type { EtaEstimate, PacingModel, RateEstimate } from '../eta';
 import { useNow } from '../hooks/useNow';
 import { useStore } from '../store';
 import type { ChainState, NodeInfo, Side } from '../types';
-import { clsx, formatInt } from '../util';
+import { clsx, fmtHeight, formatInt } from '../util';
 import { RaceRail } from './RaceRail';
 import { SegmentBar, SegmentClock, SegmentNumber } from './SegmentClock';
 
@@ -81,6 +81,36 @@ function useHeldEta(
   return snap;
 }
 
+/** Public source repository — the GitHub mark in the header links here. */
+const REPO_URL = 'https://github.com/orangeshyguy21/forkwatch';
+
+/** Wordmark. Lives pinned to the header's far-left edge, vertically centred over the full bar. */
+function Brand() {
+  return (
+    <span className="select-none text-xl font-black leading-none tracking-tight text-zinc-100 sm:text-2xl">
+      FORK<span className="text-emerald-400">WATCH</span>
+    </span>
+  );
+}
+
+/** GitHub mark → the open-source repo. Pinned to the header's far-right edge, vertically centred. */
+function GithubLink() {
+  return (
+    <a
+      href={REPO_URL}
+      target="_blank"
+      rel="noreferrer"
+      title="View the source on GitHub"
+      aria-label="View the source on GitHub"
+      className="text-zinc-500 transition-colors hover:text-zinc-100"
+    >
+      <svg viewBox="0 0 24 24" width={22} height={22} fill="currentColor" aria-hidden="true">
+        <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
+      </svg>
+    </a>
+  );
+}
+
 type Tone = 'amber' | 'red' | 'sky' | 'emerald';
 
 const TONE: Record<Tone, { text: string; dim: string }> = {
@@ -155,7 +185,7 @@ function NodeFlank({
         {side === 'knots' && delta && (
           <span className="mr-1 align-super text-xs font-extrabold">{delta}</span>
         )}
-        {formatInt(node.blocks)}
+        {fmtHeight(node.blocks)}
         {side === 'core' && delta && (
           <span className="ml-1 align-super text-xs font-extrabold">{delta}</span>
         )}
@@ -233,7 +263,7 @@ function useHero(state: ChainState | null): Hero | null {
       kind: 'status',
       tone: 'red',
       value: `+${formatInt(coreAhead)} / +${formatInt(knotsAhead)}`,
-      eyebrow: `Chain split at #${formatInt(at)}`,
+      eyebrow: `Chain split at #${fmtHeight(at)}`,
       // No caption: the flanking heights and the forked rail below already say all of this.
       caption: '',
       pulse: `${coreAhead}:${knotsAhead}`,
@@ -260,7 +290,7 @@ function useHero(state: ChainState | null): Hero | null {
       tone: 'sky',
       value: 'SYNCING',
       eyebrow: 'Nodes catching up',
-      caption: `non-signaling #${formatInt(state.core?.blocks)} · signaling #${formatInt(state.knots?.blocks)} — one node behind, not a split`,
+      caption: `non-signaling #${fmtHeight(state.core?.blocks)} · signaling #${fmtHeight(state.knots?.blocks)} — one node behind, not a split`,
     };
   }
 
@@ -297,7 +327,7 @@ function useHero(state: ChainState | null): Hero | null {
       tone: 'amber',
       // The arrival time is the headline above the clock — the unit a viewer actually plans around.
       // Falls back to naming the target height when there is no rate estimate to date it with.
-      eyebrow: etaDate ?? `${label} · #${formatInt(sf.height)}`,
+      eyebrow: etaDate ?? `${label} · #${fmtHeight(sf.height)}`,
       // Just the distance to the target. The band, the rate and the retarget split were all true and
       // all noise: they moved on their own, none of them changed what a viewer would do, and they
       // buried the one number that does. Under the block face even this is redundant with the digits
@@ -316,8 +346,8 @@ function useHero(state: ChainState | null): Hero | null {
     kind: 'status',
     tone: 'emerald',
     value: 'IN AGREEMENT',
-    eyebrow: sf ? `Past #${formatInt(sf.height)}` : 'Single chain',
-    caption: `both nodes on the same tip · #${formatInt(state.tip_height)}`,
+    eyebrow: sf ? `Past #${fmtHeight(sf.height)}` : 'Single chain',
+    caption: `both nodes on the same tip · #${fmtHeight(state.tip_height)}`,
   };
 }
 
@@ -406,6 +436,12 @@ export function Header({ state, error }: Props) {
   if (!state || !hero) {
     return (
       <header className="sticky top-0 z-30 border-b border-white/10 bg-black/70 px-5 py-4 backdrop-blur">
+        <div className="pointer-events-none absolute inset-y-0 left-5 flex items-center">
+          <Brand />
+        </div>
+        <div className="absolute inset-y-0 right-5 flex items-center">
+          <GithubLink />
+        </div>
         <div className="mx-auto flex max-w-6xl items-center justify-center">
           <span className="text-sm text-zinc-500">
             {error ? `Connection error: ${error}` : 'Connecting to nodes…'}
@@ -419,6 +455,12 @@ export function Header({ state, error }: Props) {
 
   return (
     <header className="sticky top-0 z-30 border-b border-white/10 bg-black/70 backdrop-blur">
+      <div className="pointer-events-none absolute inset-y-0 left-5 z-10 flex items-center">
+        <Brand />
+      </div>
+      <div className="absolute inset-y-0 right-5 z-10 flex items-center">
+        <GithubLink />
+      </div>
       <div className="mx-auto max-w-6xl px-5 py-2.5">
         {/* The instrument row: the two nodes flank the clock they are racing under. */}
         <div className="flex flex-wrap items-center justify-center gap-x-8 gap-y-2">
