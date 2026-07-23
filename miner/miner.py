@@ -11,7 +11,8 @@ Timeline:
   A. Activate RDTS on Knots (burst-mine bit-4 signaling blocks) + fund Core.
   B. Steady state at the hashrate ratio until FORK_AT_HEIGHT.
   C. FORK: Core mines an RDTS-violating block (Knots rejects it).
-  D. Keep mining at the ratio forever — Core extends its (Knots-invalid) chain, Knots its own valid one.
+  D. Both chains keep growing on independent clocks — Core every MINE_INTERVAL_SECS on its
+     (Knots-invalid) chain, Knots every KNOTS_INTERVAL_SECS on its own valid minority chain.
 
 Pure stdlib. JSON-RPC over HTTP to both nodes.
 """
@@ -31,6 +32,7 @@ FORK_AT = int(os.environ.get("FORK_AT_HEIGHT", "560"))
 PRE_FORK_BLOCKS = int(os.environ.get("PRE_FORK_BLOCKS", "18"))
 KNOTS_PER_100 = max(0, min(100, int(os.environ.get("KNOTS_PER_100", "1"))))  # Knots blocks per 100
 VIOLATION_BYTES = int(os.environ.get("VIOLATION_BYTES", "200"))  # OP_RETURN payload; >83 breaks rule 1
+KNOTS_INTERVAL = float(os.environ.get("KNOTS_INTERVAL_SECS", "60"))  # Knots' own cadence AFTER the fork
 
 _AUTH = "Basic " + base64.b64encode(f"{USER}:{PASS}".encode()).decode()
 
@@ -132,7 +134,8 @@ def mines_knots(block_index):
 
 def main():
     log(f"config: interval={INTERVAL}s fork_at={FORK_AT} pre_fork={PRE_FORK_BLOCKS} "
-        f"knots_per_100={KNOTS_PER_100} violation_bytes={VIOLATION_BYTES}")
+        f"knots_per_100={KNOTS_PER_100} knots_interval={KNOTS_INTERVAL:g}s "
+        f"violation_bytes={VIOLATION_BYTES}")
     wait_rpc()
     ensure_wallet(CORE)
     ensure_wallet(KNOTS)
@@ -159,15 +162,39 @@ def main():
     forked = is_forked()
     log(f"steady state at height {height}; FORK SCHEDULED AT {fork_h}; already_forked={forked}")
 
-    # Phases B–D: one steady-state loop at the hashrate ratio.
+    # Phases B–D: one steady-state loop.
+    #
+    # BEFORE the fork there is a single shared chain, so the two nodes cannot mine independently —
+    # they take turns on it at the KNOTS_PER_100 ratio, which is what makes the pre-fork chain's
+    # bit-4 share match the hashrate story.
+    #
+    # AFTER the fork there are two chains and no shared tip to contend for, so each side runs its
+    # own clock: Core every INTERVAL, Knots every KNOTS_INTERVAL. The minority chain keeps growing
+    # — visibly, on its own branch — just slower, which is the thing worth watching. Deriving its
+    # rate from KNOTS_PER_100 instead would put a block on it every ~30 minutes at these settings:
+    # true to the hashrate, useless to watch.
     n = 0
+    last_knots = 0.0
     while True:
         try:
             if not forked and h(CORE) >= fork_h - 1:
                 viol = mine_violating_block(caddr)
                 forked = True
+                last_knots = time.time()  # start the minority chain's clock at the split
                 log(f"*** FORK *** Core mined RDTS-violating block {viol} at {h(CORE)}; "
-                    f"Knots stays at {h(KNOTS)}")
+                    f"Knots stays at {h(KNOTS)} — Knots now mines its own branch every "
+                    f"{KNOTS_INTERVAL:g}s")
+            elif forked:
+                n += 1
+                mine(CORE, 1, caddr)
+                who = "core"
+                if time.time() - last_knots >= KNOTS_INTERVAL:
+                    mine(KNOTS, 1, kaddr)
+                    last_knots = time.time()
+                    who = "core+knots"
+                if n % 25 == 0:
+                    log(f"[{who}] Core h={h(CORE)} Knots h={h(KNOTS)} "
+                        f"depth={h(CORE) - h(KNOTS)}")
             else:
                 n += 1
                 if mines_knots(n):
@@ -177,8 +204,7 @@ def main():
                     mine(CORE, 1, caddr)
                     who = "core"
                 if n % 25 == 0:
-                    log(f"[{who}] Core h={h(CORE)} Knots h={h(KNOTS)} "
-                        f"{'depth=' + str(h(CORE) - h(KNOTS)) if forked else '(agreed)'}")
+                    log(f"[{who}] Core h={h(CORE)} Knots h={h(KNOTS)} (agreed)")
         except Exception as e:
             log("mining error (continuing):", e)
         time.sleep(INTERVAL)

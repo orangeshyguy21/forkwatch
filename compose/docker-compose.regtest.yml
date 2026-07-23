@@ -93,7 +93,8 @@ services:
       - MINE_INTERVAL_SECS=${BLOCK_SPACING_SECS:-20}   # live cadence == the spacing the history was dated at
       - FORK_AT_HEIGHT=${FORK_AT_HEIGHT:-6048}   # preprogrammed fork height (must match the app service)
       - PRE_FORK_BLOCKS=${PRE_FORK_BLOCKS:-18}     # fallback pre-fork window if setup already passed FORK_AT_HEIGHT
-      - KNOTS_PER_100=${KNOTS_PER_100:-1}        # Knots (BIP-110) hashrate: blocks Knots mines per 100 (~1%)
+      - KNOTS_PER_100=${KNOTS_PER_100:-1}        # PRE-fork: Knots blocks per 100 on the shared chain
+      - KNOTS_INTERVAL_SECS=${KNOTS_INTERVAL_SECS:-60}   # POST-fork: Knots' own cadence on its branch
       - VIOLATION_BYTES=${VIOLATION_BYTES:-200}   # OP_RETURN payload size in the fork-triggering tx
     networks: [fwnet]
 

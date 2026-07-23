@@ -137,11 +137,45 @@ function Colon() {
 /** Height of the digit row itself. The unit label sits below it, outside this box. */
 const ROW = 'h-14 sm:h-[4.5rem]';
 
-/** A labelled group of digits (e.g. `19` / DAYS). */
-function Group({ value, label }: { value: string; label: string }) {
+/**
+ * Plus sign in the same chamfered-bar language as the digits — a seven-segment panel has no "+"
+ * glyph, so we mint one from the hBar/vBar primitives. Rides at digit mid-height in a narrower
+ * cell than a digit, since it is punctuation, not a numeral.
+ */
+function PlusGlyph() {
+  const cx = W / 2;
+  const cy = H / 2;
+  const L = 20; // half-span of each bar
+  return (
+    <svg viewBox={`${cx - 26} 0 52 ${H}`} className="h-full w-auto shrink-0" aria-hidden="true">
+      <polygon points={hBar(cy, cx - L, cx + L)} fill="currentColor" />
+      <polygon points={vBar(cx, cy - L, cy + L)} fill="currentColor" />
+    </svg>
+  );
+}
+
+/**
+ * A single chamfered bar — the split divider. Between two branch counters it reads as the tear
+ * itself; colour it via className (the split wears red). Inset from the digit height at both ends:
+ * a full-height centred bar sits exactly where a ghost "1" would, and got read as one.
+ */
+export function SegmentBar({ className }: { className?: string }) {
+  const inset = 16;
+  return (
+    <div className={clsx(ROW, GLOW, className)}>
+      <svg viewBox={`0 0 20 ${H}`} className="h-full w-auto shrink-0" aria-hidden="true">
+        <polygon points={vBar(10, Y_TOP + inset, Y_BOT - inset)} fill="currentColor" />
+      </svg>
+    </div>
+  );
+}
+
+/** A labelled group of digits (e.g. `19` / DAYS), optionally led by a plus sign. */
+function Group({ value, label, plus }: { value: string; label: string; plus?: boolean }) {
   return (
     <div className="flex flex-col items-center gap-2">
       <div className={clsx('flex items-stretch gap-[3px]', ROW)}>
+        {plus && <PlusGlyph />}
         {value.split('').map((c, i) => (
           <Digit key={i} char={c} />
         ))}
@@ -163,14 +197,17 @@ export function SegmentNumber({
   value,
   label,
   className,
+  plus,
 }: {
   value: number;
   label: string;
   className?: string;
+  /** Lead with a chamfered plus sign — for delta counts (+10 since the split). */
+  plus?: boolean;
 }) {
   return (
     <div className={clsx('flex items-start justify-center', GLOW, className)}>
-      <Group value={String(Math.max(0, Math.floor(value)))} label={label} />
+      <Group value={String(Math.max(0, Math.floor(value)))} label={label} plus={plus} />
     </div>
   );
 }

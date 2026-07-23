@@ -178,6 +178,10 @@ def visible_mine(n, caddr, kaddr, t_start):
         if mines_knots(i):
             wait_synced()  # Knots must hold Core's tip before it extends it
             rpc(KNOTS, "generatetoaddress", [1, kaddr])
+            # ...and Core must hold the result before it mines again, or it builds on the same
+            # parent and the two blocks compete at one height. The loser is reorged out and the
+            # run silently comes up short — a shared chain is supposed to have no orphans in it.
+            wait_synced()
             k_blocks += 1
         else:
             rpc(CORE, "generatetoaddress", [1, caddr])

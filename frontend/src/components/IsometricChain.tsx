@@ -32,10 +32,6 @@ import { SIGNAL_LABEL, SignalStickerIcon, StickerIcon } from './ViolationSticker
 const BIG_NUM_FLY_ON = 0.16;
 const BIG_NUM_DEBOUNCE_MS = 320;
 
-/** BIP-110/RDTS mandatory-signaling height: from this block on, non-signaling blocks are invalid
- *  (bit-4 signaling becomes required). RDTS then locks in / activates at 965,664. */
-const MANDATORY_SIGNALING_HEIGHT = 961_632;
-
 /** Chain-stretch pop: when a block lands in focus the neighbours recoil AWAY from it along the chain
  *  axis, then spring back — reading as the blockchain elastically stretching to admit the new focus,
  *  rather than the focused block itself squashing. Per-block recoil = distance-from-focus (blocks,
@@ -278,7 +274,6 @@ export function IsometricChain() {
   const forked = !!state && !state.agreed && !!state.fork;
   const forkAt = state?.fork?.at_height ?? Number.POSITIVE_INFINITY;
   const knotsTip = state?.knots?.blocks ?? null; // Knots minority chain tip height
-  const knotsRejectsCoreTip = state?.fork?.knots_view_of_core_tip === 'invalid';
 
   const floor = pruneFloor ?? 0; // data floor: lowest height with cached block data
   const tip = tipHeight ?? 0;
@@ -648,27 +643,6 @@ export function IsometricChain() {
         {/* HUD */}
         {!notReady && (
           <div className="pointer-events-none absolute right-4 top-4 flex flex-col items-end gap-1.5">
-            {(() => {
-              // Countdown to BIP-110 mandatory signaling, driven by the live chain tip. Once the tip
-              // reaches the threshold, flip to a "reached" state instead of showing a negative count.
-              const toMandatory = MANDATORY_SIGNALING_HEIGHT - tip;
-              const reached = toMandatory <= 0;
-              return (
-                <div
-                  className={clsx(
-                    'rounded-md border px-2.5 py-1 font-mono text-[11px] backdrop-blur',
-                    reached
-                      ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
-                      : 'border-amber-500/40 bg-amber-500/10 text-amber-300',
-                  )}
-                  title={`Mandatory signaling at block ${formatInt(MANDATORY_SIGNALING_HEIGHT)}`}
-                >
-                  {reached
-                    ? '● mandatory signaling live'
-                    : `${formatInt(toMandatory)} block${toMandatory === 1 ? '' : 's'} → mandatory signaling`}
-                </div>
-              );
-            })()}
             <div className="rounded-md border border-white/10 bg-black/50 px-2.5 py-1 font-mono text-[11px] text-zinc-400 backdrop-blur">
               focus {heightLabel(bigNum)}
             </div>
@@ -690,13 +664,6 @@ export function IsometricChain() {
           </div>
         )}
 
-        {/* fork banner */}
-        {forked && (
-          <div className="pointer-events-none absolute left-4 top-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-red-300 backdrop-blur">
-            ⚔ Forked at #{formatInt(forkAt)}
-            {knotsRejectsCoreTip && <span className="ml-2 text-red-200/80">Knots rejects Core →</span>}
-          </div>
-        )}
       </div>
 
       {!notReady && (

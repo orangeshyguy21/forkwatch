@@ -5,7 +5,8 @@ import { useNow } from '../hooks/useNow';
 import { useStore } from '../store';
 import type { ChainState, NodeInfo, Side } from '../types';
 import { clsx, formatInt } from '../util';
-import { SegmentClock, SegmentNumber } from './SegmentClock';
+import { RaceRail } from './RaceRail';
+import { SegmentBar, SegmentClock, SegmentNumber } from './SegmentClock';
 
 /**
  * Below this many blocks the clock is retired: a time estimate over a handful of blocks is mostly
@@ -89,39 +90,77 @@ const TONE: Record<Tone, { text: string; dim: string }> = {
   emerald: { text: 'text-emerald-300', dim: 'text-emerald-400/70' },
 };
 
-function Brand() {
-  return (
-    <span className="select-none text-xl font-black leading-none tracking-tight text-zinc-100 sm:text-2xl">
-      FORK<span className="text-emerald-400">WATCH</span>
-    </span>
-  );
+/** Per-node tone + delta for the flanking readouts, derived from the same state branches the hero
+ *  uses. Colours track the race rail below: cyan/slate lanes on a split, sky for a lagging node,
+ *  amber for a rejected tip, quiet zinc when there is nothing to say. */
+function flankProps(state: ChainState): {
+  core: { cls: string; delta?: string };
+  knots: { cls: string; delta?: string };
+} {
+  const coreH = state.core?.blocks ?? 0;
+  const knotsH = state.knots?.blocks ?? 0;
+  if (state.split) {
+    // Lane colours only — the "+N / +N" score is the hero's line, and repeating it here (and on
+    // the rail) made the same number appear three times.
+    return {
+      core: { cls: 'text-cyan-300' },
+      knots: { cls: 'text-slate-300' },
+    };
+  }
+  if (state.rejected) {
+    return { core: { cls: 'text-zinc-100' }, knots: { cls: 'text-amber-300', delta: '✕' } };
+  }
+  if (state.syncing) {
+    const d = `−${formatInt(Math.abs(coreH - knotsH))}`;
+    return knotsH < coreH
+      ? { core: { cls: 'text-zinc-100' }, knots: { cls: 'text-sky-300', delta: d } }
+      : { core: { cls: 'text-sky-300', delta: d }, knots: { cls: 'text-zinc-100' } };
+  }
+  // In agreement the matching heights ARE the message; no colour needed to assert it.
+  return { core: { cls: 'text-zinc-100' }, knots: { cls: 'text-zinc-100' } };
 }
 
-function NodeReadout({ node, side }: { node: NodeInfo; side: Side }) {
+/** One node, flanking the clock. Stance over height over client string; the delta rides the height
+ *  as a superscript on the clock-facing side. No liveness dot — a dead node says OFFLINE instead. */
+function NodeFlank({
+  node,
+  side,
+  cls,
+  delta,
+}: {
+  node: NodeInfo;
+  side: Side;
+  cls: string;
+  delta?: string;
+}) {
   const stance = side === 'knots' ? 'SIGNALING' : 'NON-SIGNALING';
   return (
-    <div data-side={side} className="flex items-center gap-2" title={node.version}>
-      <span
+    <div
+      data-side={side}
+      className={clsx(
+        'flex w-44 shrink-0 flex-col leading-tight',
+        side === 'core' ? 'items-end text-right' : 'items-start text-left',
+      )}
+      title={node.version}
+    >
+      <div
         className={clsx(
-          'h-2 w-2 shrink-0 rounded-full',
-          node.online ? 'bg-emerald-400 shadow-[0_0_6px_1px_rgba(52,211,153,0.5)]' : 'bg-red-500',
+          'text-[10px] font-bold uppercase tracking-wider',
+          !node.online ? 'text-red-400' : side === 'knots' ? 'text-emerald-300' : 'text-zinc-400',
         )}
-        title={node.online ? 'online' : 'offline'}
-      />
-      <div className="leading-tight">
-        <div
-          className={clsx(
-            'text-[10px] font-bold uppercase tracking-wider',
-            side === 'core' ? 'text-zinc-300' : 'text-emerald-300',
-          )}
-        >
-          {stance}
-        </div>
-        <div className="text-[9px] text-zinc-600">{node.version}</div>
+      >
+        {node.online ? stance : 'OFFLINE'}
       </div>
-      <div className="font-mono text-sm font-bold tabular-nums leading-none text-zinc-100">
+      <div className={clsx('font-mono text-2xl font-extrabold tabular-nums', cls)}>
+        {side === 'knots' && delta && (
+          <span className="mr-1 align-super text-xs font-extrabold">{delta}</span>
+        )}
         {formatInt(node.blocks)}
+        {side === 'core' && delta && (
+          <span className="ml-1 align-super text-xs font-extrabold">{delta}</span>
+        )}
       </div>
+      <div className="text-[9px] text-zinc-600">{node.version}</div>
     </div>
   );
 }
@@ -135,6 +174,8 @@ interface StatusHero {
   eyebrow: string;
   caption: string;
   pulse?: string;
+  /** Set on a split: the per-branch blocks-since-fork, rendered as segment counters. */
+  split?: { core: number; knots: number };
 }
 
 /** The countdown to the target height. Carries both faces so they can cross-fade. */
@@ -193,8 +234,10 @@ function useHero(state: ChainState | null): Hero | null {
       tone: 'red',
       value: `+${formatInt(coreAhead)} / +${formatInt(knotsAhead)}`,
       eyebrow: `Chain split at #${formatInt(at)}`,
-      caption: `non-signaling +${formatInt(coreAhead)} · signaling +${formatInt(knotsAhead)} — blocks mined on each branch since the split`,
+      // No caption: the flanking heights and the forked rail below already say all of this.
+      caption: '',
       pulse: `${coreAhead}:${knotsAhead}`,
+      split: { core: coreAhead, knots: knotsAhead },
     };
   }
 
@@ -206,7 +249,8 @@ function useHero(state: ChainState | null): Hero | null {
       tone: 'amber',
       value: 'REJECTED',
       eyebrow: 'Knots rejected the tip',
-      caption: `non-signaling #${formatInt(state.core?.blocks)} · signaling #${formatInt(state.knots?.blocks)} — no competing block at that height yet`,
+      // No caption: the flanks carry the heights and the rail's ✕ marker carries the rest.
+      caption: '',
     };
   }
 
@@ -313,6 +357,17 @@ function HeroBlock({ hero }: { hero: Hero }) {
             />
           </div>
         </div>
+      ) : hero.split ? (
+        // The split scoreboard: each branch's blocks-since-fork as a segment counter in its lane
+        // colour, separated by a single red bar — the tear itself, in the clock's own language.
+        <div
+          key={hero.pulse}
+          className="fw-hero-in mt-2 flex items-start justify-center gap-7 sm:gap-9"
+        >
+          <SegmentNumber value={hero.split.core} label="non-signaling" plus className="text-cyan-300" />
+          <SegmentBar className="text-red-400" />
+          <SegmentNumber value={hero.split.knots} label="signaling" plus className="text-slate-300" />
+        </div>
       ) : (
         <div
           key={hero.pulse}
@@ -351,8 +406,7 @@ export function Header({ state, error }: Props) {
   if (!state || !hero) {
     return (
       <header className="sticky top-0 z-30 border-b border-white/10 bg-black/70 px-5 py-4 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center gap-3">
-          <Brand />
+        <div className="mx-auto flex max-w-6xl items-center justify-center">
           <span className="text-sm text-zinc-500">
             {error ? `Connection error: ${error}` : 'Connecting to nodes…'}
           </span>
@@ -361,20 +415,19 @@ export function Header({ state, error }: Props) {
     );
   }
 
+  const fp = flankProps(state);
+
   return (
     <header className="sticky top-0 z-30 border-b border-white/10 bg-black/70 backdrop-blur">
       <div className="mx-auto max-w-6xl px-5 py-2.5">
-        {/* Identity + node liveness — context rather than headline. */}
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-          <Brand />
-          <div className="flex items-center gap-4">
-            <NodeReadout node={state.core} side="core" />
-            <span className="h-6 w-px bg-white/10" />
-            <NodeReadout node={state.knots} side="knots" />
-          </div>
+        {/* The instrument row: the two nodes flank the clock they are racing under. */}
+        <div className="flex flex-wrap items-center justify-center gap-x-8 gap-y-2">
+          <NodeFlank node={state.core} side="core" cls={fp.core.cls} delta={fp.core.delta} />
+          <HeroBlock hero={hero} />
+          <NodeFlank node={state.knots} side="knots" cls={fp.knots.cls} delta={fp.knots.delta} />
         </div>
 
-        <HeroBlock hero={hero} />
+        <RaceRail state={state} />
 
         {error && (
           <div className="mt-1.5 text-center text-[10px] text-amber-400/80">
