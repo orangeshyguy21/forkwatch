@@ -1,0 +1,124 @@
+# Forkwatch — MAINNET (production) stack.
+# Two pruned, blocks-only nodes syncing the real chain over Tor (P2P only), bootstrapped from the
+# assumeutxo snapshot at height 840,000. RPC/ZMQ/backend all stay on the internal network. An nginx
+# reverse proxy exposes the app on the LAN at http://forkwatch.local; an mDNS publisher advertises
+# that name. Data volumes are PINNED to their original forkwars-mainnet_* names so the node data and
+# the cached-history DB survive the rename with zero copy / zero re-sync.
+name: forkwatch-mainnet
+
+services:
+  tor:
+    build:
+      context: ../tor
+    container_name: fw-tor-main
+    restart: unless-stopped
+    networks: [fwnet]
+
+  core:
+    build:
+      context: ../nodes/core
+    container_name: fw-core-main
+    restart: unless-stopped
+    depends_on: [tor]
+    environment:
+      - LOAD_SNAPSHOT=/snapshots/utxo-840000.dat
+      - SNAPSHOT_HEIGHT=840000
+    volumes:
+      - core-data:/data
+      - ../nodes/core/mainnet.conf:/data/bitcoin.conf:ro
+      - ../snapshots:/snapshots:ro
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-datadir=/data", "-rpcwait", "getblockchaininfo"]
+      interval: 15s
+      timeout: 10s
+      retries: 60
+    networks: [fwnet]
+
+  knots:
+    build:
+      context: ../nodes/knots
+    container_name: fw-knots-main
+    restart: unless-stopped
+    depends_on: [tor]
+    environment:
+      - LOAD_SNAPSHOT=/snapshots/utxo-840000.dat
+      - SNAPSHOT_HEIGHT=840000
+    volumes:
+      - knots-data:/data
+      - ../nodes/knots/mainnet.conf:/data/bitcoin.conf:ro
+      - ../snapshots:/snapshots:ro
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-datadir=/data", "-rpcwait", "getblockchaininfo"]
+      interval: 15s
+      timeout: 10s
+      retries: 60
+    networks: [fwnet]
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: fw-app-main
+    restart: unless-stopped
+    depends_on: [core, knots]
+    environment:
+      - CORE_RPC_URL=http://core:8332
+      - KNOTS_RPC_URL=http://knots:8332
+      - RPC_USER=forkwars
+      - RPC_PASS=forkwars_mainnet
+      - POLL_MS=5000
+      - BIND=0.0.0.0:8080
+      - NETWORK=mainnet
+      # DB filename kept as forkwars.db on purpose: renaming it would orphan the cached history
+      # (the node has pruned those blocks — the SQLite cache is the only copy).
+      - DB_PATH=/data/forkwars.db
+      # First epoch (2016-block boundary) where BIP-110/RDTS bit-4 signaling was possible.
+      - FLOOR_HEIGHT=927360
+    volumes:
+      - app-db:/data
+    ports:
+      - "8081:8080"   # kept for local debugging; LAN users go through nginx on :80
+    networks: [fwnet]
+
+  # LAN reverse proxy: http://forkwatch.local (port 80) -> app:8080 on the internal network.
+  nginx:
+    image: nginx:alpine
+    container_name: fw-nginx-main
+    restart: unless-stopped
+    depends_on: [app]
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/forkwatch.conf:/etc/nginx/conf.d/default.conf:ro
+    networks: [fwnet]
+
+  # mDNS publisher: advertises forkwatch.local on the LAN via the host's avahi daemon. Uses host
+  # networking + the host D-Bus socket; no sudo needed. Re-detects the host IP on restart.
+  mdns:
+    build:
+      context: ../mdns
+    container_name: fw-mdns-main
+    restart: unless-stopped
+    network_mode: host
+    # Share the host PID namespace so the D-Bus system bus sees matching peer credentials.
+    pid: host
+    # Ubuntu's default docker AppArmor profile blocks D-Bus (mediation denies the system bus);
+    # run this one helper unconfined so it can reach the host's avahi daemon.
+    security_opt:
+      - apparmor=unconfined
+    environment:
+      - MDNS_NAME=forkwatch.local
+    volumes:
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
+
+networks:
+  fwnet:
+
+# Pinned to the original volume names so existing node data + cached-history DB are reused as-is.
+volumes:
+  core-data:
+    name: forkwars-mainnet_core-data
+  knots-data:
+    name: forkwars-mainnet_knots-data
+  app-db:
+    name: forkwars-mainnet_app-db

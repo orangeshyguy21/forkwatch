@@ -1,0 +1,93 @@
+# Forkwatch — regtest / e2e stack.
+# Two peered nodes on regtest (no Tor, no pruning, no snapshot). Core accepts everything;
+# Knots enforces RDTS. The e2e driver forces the fork on demand. Dev-only (not exposed on the LAN).
+name: forkwatch-regtest
+
+services:
+  core:
+    build:
+      context: ../nodes/core
+    container_name: fw-core
+    restart: unless-stopped
+    volumes:
+      - core-data:/data
+      - ../nodes/core/regtest.conf:/data/bitcoin.conf:ro
+    networks: [fwnet]
+    ports:
+      - "18443:18443"   # Core RPC exposed to host for debugging/e2e driver
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-datadir=/data", "-rpcwait", "getblockchaininfo"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
+  knots:
+    build:
+      context: ../nodes/knots
+    container_name: fw-knots
+    restart: unless-stopped
+    volumes:
+      - knots-data:/data
+      - ../nodes/knots/regtest.conf:/data/bitcoin.conf:ro
+    networks: [fwnet]
+    ports:
+      - "18453:18443"   # Knots RPC exposed to host (remapped to avoid clashing with Core)
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-datadir=/data", "-rpcwait", "getblockchaininfo"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: fw-app
+    restart: unless-stopped
+    depends_on: [core, knots]
+    environment:
+      - CORE_RPC_URL=http://core:18443
+      - KNOTS_RPC_URL=http://knots:18443
+      - RPC_USER=forkwars
+      - RPC_PASS=forkwars_regtest
+      - POLL_MS=2000
+      - BIND=0.0.0.0:8080
+      - NETWORK=regtest
+      - FORK_AT_HEIGHT=560   # keep in sync with the miner; drives the UI "fork scheduled" countdown
+      - DB_PATH=/data/forkwars.db
+    volumes:
+      - app-db:/data
+    ports:
+      - "8080:8080"   # open http://localhost:8080 to view the app
+    networks: [fwnet]
+
+  # Continuous block producer: grows a shared chain, forks at FORK_AT_HEIGHT, then keeps both
+  # chains advancing. This is what makes the demo "live" (before -> fork -> after).
+  miner:
+    build:
+      context: ../miner
+    container_name: fw-miner
+    restart: unless-stopped
+    depends_on: [core, knots]
+    environment:
+      - CORE_RPC_URL=http://core:18443
+      - KNOTS_RPC_URL=http://knots:18443
+      - RPC_USER=forkwars
+      - RPC_PASS=forkwars_regtest
+      - MINE_INTERVAL_SECS=15   # seconds between blocks (slow, watchable cadence)
+      - FORK_AT_HEIGHT=560     # preprogrammed fork height (must match the app service)
+      - PRE_FORK_BLOCKS=18     # fallback pre-fork window if setup already passed FORK_AT_HEIGHT
+      - KNOTS_PER_100=1        # Knots (BIP-110) hashrate: blocks Knots mines per 100 (~1%)
+    networks: [fwnet]
+
+networks:
+  fwnet:
+
+# Pinned to the original volume names so the existing regtest chain + app DB are reused as-is.
+volumes:
+  core-data:
+    name: forkwars-regtest_core-data
+  knots-data:
+    name: forkwars-regtest_knots-data
+  app-db:
+    name: forkwars-regtest_app-db
