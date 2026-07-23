@@ -14,7 +14,12 @@ pub struct Rpc {
 impl Rpc {
     pub fn new(url: &str, user: &str, pass: &str) -> Self {
         let auth = format!("Basic {}", STANDARD.encode(format!("{user}:{pass}")));
+        // A short CONNECT timeout separate from the overall timeout: a blackholed node (firewall drop,
+        // wedged bitcoind not accepting) fails fast here instead of consuming the full 30s per call.
+        // Three-plus serial calls each stalling 30s would push a poll past READY_MAX_STALE and flap
+        // the container's readiness/health — an availability loss while the *other* node is fine.
         let agent = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(4))
             .timeout(Duration::from_secs(30))
             .build();
         Rpc { url: url.to_string(), auth, agent }

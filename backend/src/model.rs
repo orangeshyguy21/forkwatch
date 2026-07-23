@@ -63,10 +63,19 @@ pub struct AppState {
     pub knots_tips_status: HashMap<String, String>, // getchaintips hash -> status (Knots)
     pub core_tip_h: i64,
     pub knots_tip_h: i64,
+    /// Highest block common to both chains (the fork's last common ancestor). Equals the tip when the
+    /// nodes agree; below it when they have forked; -1/0 before the first poll. A block strictly below
+    /// this height is final on BOTH chains — its per-node status can no longer change — which is what
+    /// lets `/api/blocks/range` mark deep history immutable without freezing volatile fork state.
+    pub lca_height: i64,
     pub prune_floor: i64, // lowest servable height (hard stop = node prune height)
     pub core: NodeInfo,
     pub knots: NodeInfo,
     pub state_json: serde_json::Value,
+    /// Pre-serialized `/api/state` body, rebuilt once per poll. Serving this shared `Arc<str>` avoids
+    /// deep-cloning the whole state `Value` (hundreds of KB during a fork) under the read lock on
+    /// every request — the clone+reserialize was per-request work that compounded read-lock residence.
+    pub state_json_str: Option<Arc<str>>,
     /// The full WebSocket push frame (state + the newest blocks), rebuilt once per poll and shared by
     /// every connected client. Pushing it means a block costs each client zero HTTP requests.
     pub push_frame: Option<Arc<str>>,

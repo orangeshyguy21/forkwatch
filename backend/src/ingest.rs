@@ -237,10 +237,18 @@ fn poll_once(
         }
     }
 
-    // 3. Rebuild chain maps + state snapshot under the write lock. No RPC happens here, so the guard
-    //    is held only for CPU-bound work bounded by the size of the chain map.
-    let frame = {
-        let mut g = state.write();
+    // 3. Rebuild chain maps + state snapshot. The heavy work — two full-chain map walks, the epoch
+    //    scan, fork-branch assembly, and serializing both the state body and the push frame — is done
+    //    under a *shared read* guard, so concurrent API readers keep serving throughout (the ingest
+    //    thread is the only writer, so nothing contends the read). Only the final pointer swap takes
+    //    the exclusive write lock, and it is a handful of moves. This is what keeps p99 from spiking
+    //    every poll: the old code held the *write* lock across all of this, and parking_lot's
+    //    writer-fair queuing parked every reader behind it for the whole rebuild.
+    let (
+        core_map, knots_map, core_tips_out, knots_tips_out, core_tip_h, knots_tip_h, serve_floor,
+        lca_h, sj, sj_str, frame, node_changed,
+    ) = {
+        let g = state.read();
         let core_map = build_height_map(&g.by_hash, &core_info.bestblockhash);
         let knots_map = build_height_map(&g.by_hash, &knots_info.bestblockhash);
         let core_tip_h = core_map.keys().max().copied().unwrap_or(-1);
@@ -253,8 +261,7 @@ fn poll_once(
         let min_cached = core_map.keys().min().copied().unwrap_or(backfill_target);
         let serve_floor = if nodes.floor_height > 0 { min_cached.max(nodes.floor_height) } else { min_cached };
 
-        changed = changed
-            || core_info.bestblockhash != g.core.bestblockhash
+        let node_changed = core_info.bestblockhash != g.core.bestblockhash
             || knots_info.bestblockhash != g.knots.bestblockhash
             || core_info.blocks != g.core.blocks
             || core_info.online != g.core.online
@@ -273,6 +280,9 @@ fn poll_once(
         if let Some(o) = sj.as_object_mut() {
             o.insert("floor_height".to_string(), json!(nodes.floor_height));
         }
+        // Highest common block, read back from the state we just built — this is the finality horizon
+        // `/api/blocks/range` needs to know a below-tip window can never change again.
+        let lca_h = sj.get("lca_height").and_then(|v| v.as_i64()).unwrap_or(-1);
 
         // The push frame: everything a client used to fetch in three requests per block. Built once
         // per poll and shared by every socket, so a new block costs O(clients) bytes and 0 requests.
@@ -282,22 +292,35 @@ fn poll_once(
             .map(|b| block_json(b, &core_map, &knots_map, &core_tips, &knots_tips))
             .collect();
         let frame: Arc<str> = Arc::from(
-            json!({ "type": "update", "state": sj, "blocks": push_blocks }).to_string().as_str(),
+            json!({ "type": "update", "state": &sj, "blocks": push_blocks }).to_string().as_str(),
         );
+        // Pre-serialize the /api/state body once here (not per request) so the handler serves a shared
+        // Arc instead of deep-cloning and reserializing the Value under the read lock on every hit.
+        let sj_str: Arc<str> = Arc::from(sj.to_string().as_str());
 
+        (
+            core_map, knots_map, core_tips, knots_tips, core_tip_h, knots_tip_h, serve_floor,
+            lca_h, sj, sj_str, frame, node_changed,
+        )
+    };
+    changed = changed || node_changed;
+
+    {
+        let mut g = state.write();
         g.core_by_height = core_map;
         g.knots_by_height = knots_map;
-        g.core_tips_status = core_tips;
-        g.knots_tips_status = knots_tips;
+        g.core_tips_status = core_tips_out;
+        g.knots_tips_status = knots_tips_out;
         g.core_tip_h = core_tip_h;
         g.knots_tip_h = knots_tip_h;
+        g.lca_height = lca_h;
         g.prune_floor = serve_floor;
         g.core = core_info;
         g.knots = knots_info;
         g.state_json = sj;
+        g.state_json_str = Some(sj_str);
         g.push_frame = Some(frame.clone());
-        frame
-    };
+    }
 
     Ok(if changed { Some(frame) } else { None })
 }

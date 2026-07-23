@@ -6,12 +6,13 @@ mod rdts;
 mod rpc;
 
 use axum::{
+    body::Body,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query, State,
     },
     http::{header, StatusCode},
-    response::{IntoResponse, Json},
+    response::{IntoResponse, Json, Response},
     routing::get,
     Router,
 };
@@ -20,7 +21,7 @@ use model::AppState;
 use parking_lot::RwLock;
 use serde_json::{json, Value};
 use std::{collections::HashMap, env, net::SocketAddr, sync::Arc, time::Duration};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
 use tower_http::{compression::CompressionLayer, services::ServeDir, trace::TraceLayer};
 use tracing::info;
 
@@ -35,6 +36,17 @@ const CC_TIP: &str = "public, max-age=5";
 const CC_STATE: &str = "public, max-age=2, stale-while-revalidate=30";
 const CC_NONE: &str = "no-store";
 
+/// How far below the tip a block must sit before a `/api/blocks/range` window may be marked
+/// immutable. A reorg shallower than this can still rewrite the block at a given height (changing the
+/// bytes served for a URL we would otherwise freeze for a year); deeper reorgs do not happen in
+/// practice. Below this horizon AND below the fork's last common ancestor, the response is final.
+const FINAL_DEPTH: i64 = 100;
+/// Default ceiling on concurrent WebSocket connections (override with WS_MAX_CONNS). Each socket
+/// holds a broadcast subscriber and an outbound buffer, so an unbounded count is a memory-exhaustion
+/// lever for an unauthenticated endpoint. Excess upgrade attempts get a 503 and the client's poll
+/// fallback keeps them served.
+const WS_MAX_CONNS_DEFAULT: usize = 5000;
+
 #[derive(Clone)]
 struct Ctx {
     state: Arc<RwLock<AppState>>,
@@ -44,6 +56,9 @@ struct Ctx {
     shutdown: broadcast::Sender<()>,
     /// A poll older than this means ingest is stalled and the replica should be pulled from rotation.
     ready_max_stale: Duration,
+    /// Caps concurrent WebSocket connections. A permit is held for each socket's lifetime; when none
+    /// are free the upgrade is refused with 503 rather than accepted into unbounded memory.
+    ws_conns: Arc<Semaphore>,
 }
 
 #[tokio::main]
@@ -62,7 +77,21 @@ async fn main() {
     let core_url = env::var("CORE_RPC_URL").unwrap_or_else(|_| "http://core:18443".into());
     let knots_url = env::var("KNOTS_RPC_URL").unwrap_or_else(|_| "http://knots:18443".into());
     let user = env::var("RPC_USER").unwrap_or_else(|_| "forkwars".into());
-    let pass = env::var("RPC_PASS").unwrap_or_else(|_| "forkwars_regtest".into());
+    // The default password is a regtest convenience only. On any non-regtest network a missing
+    // RPC_PASS is an operator error that must fail loudly, not silently authenticate with a value
+    // that is public in this repo's history — a working-looking process on a guessable credential is
+    // worse than a crash on boot.
+    let pass = match env::var("RPC_PASS") {
+        Ok(p) if !p.is_empty() => p,
+        _ => {
+            let net = env::var("NETWORK").unwrap_or_default();
+            if net.is_empty() || net == "regtest" {
+                "forkwars_regtest".into()
+            } else {
+                panic!("RPC_PASS must be set on NETWORK={net}; refusing to start with the public default password");
+            }
+        }
+    };
     let poll_ms: u64 = env::var("POLL_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(2000);
     let bind = env::var("BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
     let static_dir = env::var("STATIC_DIR").unwrap_or_else(|_| "static".into());
@@ -85,6 +114,8 @@ async fn main() {
     let ready_max_stale = Duration::from_secs(
         env::var("READY_MAX_STALE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(60),
     );
+    let ws_max_conns: usize = env::var("WS_MAX_CONNS")
+        .ok().and_then(|s| s.parse().ok()).filter(|v| *v > 0).unwrap_or(WS_MAX_CONNS_DEFAULT);
 
     let state = Arc::new(RwLock::new(AppState::default()));
 
@@ -115,7 +146,13 @@ async fn main() {
     ingest::spawn(state.clone(), tx.clone(), nodes, poll_ms, conn);
 
     let (shutdown, _) = broadcast::channel::<()>(1);
-    let ctx = Ctx { state, tx, shutdown: shutdown.clone(), ready_max_stale };
+    let ctx = Ctx {
+        state,
+        tx,
+        shutdown: shutdown.clone(),
+        ready_max_stale,
+        ws_conns: Arc::new(Semaphore::new(ws_max_conns)),
+    };
     let app = Router::new()
         // Liveness answers "is the process running"; readiness answers "should this replica receive
         // traffic". Conflating them (a constant `{"ok":true}`) makes every health check decorative:
@@ -213,13 +250,15 @@ async fn health_ready(State(ctx): State<Ctx>) -> impl IntoResponse {
     (code, [(header::CACHE_CONTROL, CC_NONE)], Json(body))
 }
 
-async fn get_state(State(ctx): State<Ctx>) -> impl IntoResponse {
-    let s = ctx.state.read();
-    if s.state_json.is_null() {
-        // Before the first ingest poll populates state, return a valid "still loading" shape so the
-        // frontend never dereferences a null state. Not cacheable — it would pin the loading shape
-        // at the edge past the point it stops being true.
-        return ([(header::CACHE_CONTROL, CC_NONE)], Json(json!({
+async fn get_state(State(ctx): State<Ctx>) -> Response {
+    // Clone the shared Arc (cheap) and release the lock immediately; the response body is built from
+    // it without re-serializing. Before the first poll it is None -> the loading shape below.
+    let cached = {
+        let s = ctx.state.read();
+        s.state_json_str.clone().ok_or_else(|| json!({
+            // Before the first ingest poll populates state, return a valid "still loading" shape so
+            // the frontend never dereferences a null state. Not cacheable — it would pin the loading
+            // shape at the edge past the point it stops being true.
             "core": s.core,
             "knots": s.knots,
             "agreed": true,
@@ -231,9 +270,18 @@ async fn get_state(State(ctx): State<Ctx>) -> impl IntoResponse {
             "rdts": { "status": "never", "since_height": Value::Null, "bit": 4 },
             "signaling": { "window": 2016, "signaled": 0, "total": 0, "pct": 0.0, "threshold_pct": 55.0 },
             "scheduled_fork": Value::Null,
-        })));
+        }))
+    };
+    match cached {
+        Ok(body) => (
+            [
+                (header::CACHE_CONTROL, CC_STATE),
+                (header::CONTENT_TYPE, "application/json"),
+            ],
+            Body::from(body.to_string()),
+        ).into_response(),
+        Err(loading) => ([(header::CACHE_CONTROL, CC_NONE)], Json(loading)).into_response(),
     }
-    ([(header::CACHE_CONTROL, CC_STATE)], Json(s.state_json.clone()))
 }
 
 async fn get_blocks(State(ctx): State<Ctx>, Query(q): Query<HashMap<String, String>>) -> impl IntoResponse {
@@ -283,10 +331,15 @@ async fn get_blocks_range(State(ctx): State<Ctx>, Query(q): Query<HashMap<String
     let hi = hi0.min(lo + 600); // cap window size
 
     let mut blocks = Vec::new();
+    let mut all_backfilled = true;
     let mut h = lo;
     while h <= hi {
         if let Some(hash) = by_height.get(&h) {
             if let Some(b) = s.by_hash.get(hash) {
+                // A block whose coinbase-derived miner data has not been resolved yet is still
+                // changing (step 1b re-fetches it each poll until coinbase_tag lands), so a window
+                // containing one must not be frozen.
+                all_backfilled &= b.coinbase_tag.is_some();
                 blocks.push(block_json(
                     b, &s.core_by_height, &s.knots_by_height, &s.core_tips_status, &s.knots_tips_status,
                 ));
@@ -294,10 +347,22 @@ async fn get_blocks_range(State(ctx): State<Ctx>, Query(q): Query<HashMap<String
         }
         h += 1;
     }
-    // A window entirely below the tip can never change again — the aligned chunks the client
-    // requests make these keys stable and shared across every viewer. Only the chunk containing the
-    // tip is volatile. This split is what makes the scroll-back history essentially free at the edge.
-    let cc = if hi < tip { CC_IMMUTABLE } else { CC_TIP };
+    // Immutability is a claim of finality, and the block JSON carries three things that can still
+    // change below the raw tip: per-node status (`core_status`/`knots_status`, recomputed from the
+    // live chain maps), miner backfill, and the very hash at a height (a reorg). Freeze a window ONLY
+    // when all of these are settled:
+    //   - no gaps: every height in [lo,hi] was present, so we are not caching a half-filled window
+    //     that fills in later;
+    //   - all_backfilled: every block's miner data is resolved;
+    //   - below the last common ancestor: at/above the LCA a node's status flips as a fork develops;
+    //     strictly below it both chains agree forever;
+    //   - FINAL_DEPTH below the shallower tip: no reorg can still rewrite the height.
+    // Otherwise it is tip-relative (short TTL), never immutable.
+    let min_tip = s.core_tip_h.min(s.knots_tip_h);
+    let no_gaps = !blocks.is_empty() && blocks.len() as i64 == hi - lo + 1;
+    let below_lca = s.lca_height >= 0 && hi < s.lca_height;
+    let final_window = no_gaps && all_backfilled && below_lca && hi <= min_tip - FINAL_DEPTH;
+    let cc = if final_window { CC_IMMUTABLE } else { CC_TIP };
     (
         [(header::CACHE_CONTROL, cc)],
         Json(json!({
@@ -321,15 +386,28 @@ async fn get_violations(State(ctx): State<Ctx>, Path(hash): Path<String>) -> imp
     ([(header::CACHE_CONTROL, cc)], Json(json!({ "hash": hash, "violations": vios })))
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, State(ctx): State<Ctx>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| ws_loop(socket, ctx))
+async fn ws_handler(ws: WebSocketUpgrade, State(ctx): State<Ctx>) -> Response {
+    // Refuse the upgrade if we are at the connection ceiling — better a 503 (the client falls back to
+    // polling, which the edge cache absorbs) than accepting unbounded sockets into memory.
+    let permit = match ctx.ws_conns.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::SERVICE_UNAVAILABLE, "websocket capacity reached").into_response(),
+    };
+    // The protocol is push-only: inbound frames are read solely to detect a client close, then
+    // discarded. Cap them hard so a client cannot make the server buffer (and UTF-8-validate) a
+    // multi-megabyte message before it is thrown away — the default is 64 MiB per message.
+    ws.max_message_size(4 * 1024)
+        .max_frame_size(4 * 1024)
+        .on_upgrade(move |socket| ws_loop(socket, ctx, permit))
 }
 
 /// Pushes the full payload — chain state plus the newest blocks — rather than a bare `{"type":
 /// "update"}` ping. The ping contract cost every client three HTTP requests per block, which is the
 /// app's dominant traffic source and scales linearly with audience. The frame is precomputed once per
 /// poll and shared as an `Arc<str>`, so fan-out is a pointer clone per socket.
-async fn ws_loop(mut socket: WebSocket, ctx: Ctx) {
+async fn ws_loop(mut socket: WebSocket, ctx: Ctx, _permit: OwnedSemaphorePermit) {
+    // `_permit` is held for the whole connection; dropping it here (on any break/return below)
+    // returns the slot to the semaphore so a new client can connect.
     let mut rx = ctx.tx.subscribe();
     let mut shutdown = ctx.shutdown.subscribe();
 
