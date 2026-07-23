@@ -61,15 +61,32 @@ export interface ForkInfo {
 
 export interface ScheduledFork {
   height: number;
+  /** What this height *is* — differs by network, so the backend names it. */
+  label: string | null;
   blocks_until: number;
+  /** True once an actual split occurs, or the target height is passed. Not merely disagreement. */
   reached: boolean;
+}
+
+export interface Pacing {
+  /** Protocol target block interval, seconds. Null where retargeting does not bind (regtest). */
+  target_spacing: number | null;
+  /** Blocks per difficulty epoch (mainnet 2016). */
+  retarget_interval: number;
+  /** First height mined under the *next* difficulty. Null if unknown. */
+  next_retarget_height: number | null;
 }
 
 export interface ChainState {
   core: NodeInfo;
   knots: NodeInfo;
   agreed: boolean;
+  /** One node is simply behind on the same chain. Not a split. */
   syncing?: boolean;
+  /** Both nodes hold a block at the same height with different hashes. THIS is a chain split. */
+  split?: boolean;
+  /** Knots has rejected Core's tip but has not yet produced a competing block at that height. */
+  rejected?: boolean;
   lca_height: number;
   tip_height: number;
   prune_floor?: number; // data floor: lowest height actually cached/servable
@@ -78,6 +95,7 @@ export interface ChainState {
   rdts: RdtsInfo;
   signaling: SignalingInfo;
   scheduled_fork?: ScheduledFork | null;
+  pacing?: Pacing | null;
 }
 
 export interface BlocksPage {
@@ -100,6 +118,16 @@ export interface Violation {
 export interface ViolationsResponse {
   hash: string;
   violations: Violation[];
+}
+
+/** WebSocket push frame. The backend sends the payload itself rather than a bare notification, so a
+ *  new block costs the client zero HTTP requests. `state`/`blocks` are absent only in the frame sent
+ *  to a client that connects before ingest has completed its first poll — that case falls back to
+ *  fetching over HTTP. `blocks` carries the newest few blocks on the Core chain, tip-first. */
+export interface PushFrame {
+  type: 'update';
+  state?: ChainState;
+  blocks?: Block[];
 }
 
 export type Side = 'core' | 'knots';

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
 
 /// Aggregated RDTS violation: a rule+kind and how many outputs in the block hit it. We do NOT store
 /// per-transaction detail — just the type and count.
@@ -36,6 +38,10 @@ pub struct Block {
 #[derive(Clone, Serialize, Default)]
 pub struct NodeInfo {
     pub label: String,
+    /// Network the node is on ("main" | "test" | "signet" | "regtest"). Drives capability decisions
+    /// that must not be inferred from chain state — notably whether prevout resolution (which needs
+    /// `txindex=1`) is affordable at all.
+    pub chain: String,
     pub version: String,
     pub blocks: i64,
     pub headers: i64,
@@ -61,4 +67,10 @@ pub struct AppState {
     pub core: NodeInfo,
     pub knots: NodeInfo,
     pub state_json: serde_json::Value,
+    /// The full WebSocket push frame (state + the newest blocks), rebuilt once per poll and shared by
+    /// every connected client. Pushing it means a block costs each client zero HTTP requests.
+    pub push_frame: Option<Arc<str>>,
+    /// When the ingest loop last completed a poll that reached both nodes. `None` until the first one
+    /// lands. This is the readiness signal — a frozen ingest is invisible in every other metric.
+    pub last_poll_ok: Option<Instant>,
 }

@@ -129,6 +129,52 @@ const STICKERS: Record<number, StickerDef> = {
   },
 };
 
+export const SIGNAL_LABEL = 'signals BIP-110 (bit 4 set)';
+
+/**
+ * The BIP-110 signaling sticker — same die-cut family as the hazard stickers, but a badge of
+ * allegiance rather than a warning: a cross with the BIP number under it. Exported as bare artwork
+ * so it can be painted onto the cube's flank in perspective as well as sit upright in the sidebar.
+ */
+export const SIGNAL_STICKER_BODY = (
+  <>
+    <rect x="8" y="8" width="48" height="48" rx="12" {...cut('#10b981')} />
+    {/* Latin cross, drawn as one outline so the die-cut reads cleanly at small sizes. */}
+    <path
+      d="M29.2 13 h5.6 v7 h7.2 v5.6 h-7.2 v13 h-5.6 v-13 h-7.2 v-5.6 h7.2 z"
+      fill={CREAM}
+    />
+    <text
+      x="32"
+      y="52"
+      textAnchor="middle"
+      fontFamily="ui-monospace, monospace"
+      fontWeight="800"
+      fontSize="14"
+      fill={CREAM}
+    >
+      110
+    </text>
+  </>
+);
+
+/** Upright signaling sticker, for the block sidebar. */
+export function SignalStickerIcon({ size, className }: { size: number; className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 64 64"
+      width={size}
+      height={size}
+      className={className}
+      style={{ display: 'block', overflow: 'visible', filter: 'drop-shadow(0 1px 1.5px rgba(0,0,0,0.5))' }}
+      role="img"
+      aria-label={SIGNAL_LABEL}
+    >
+      {SIGNAL_STICKER_BODY}
+    </svg>
+  );
+}
+
 /** Human label for a rule's sticker (for tooltips / aria). */
 export function stickerLabel(rule: number): string | undefined {
   return STICKERS[rule]?.label;

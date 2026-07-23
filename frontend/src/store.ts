@@ -1,8 +1,13 @@
 import { create } from 'zustand';
 import { fetchBlocks, fetchBlocksRange, fetchState } from './api';
-import type { Block, ChainState } from './types';
+import type { Block, ChainState, PushFrame } from './types';
 
 const PAGE_SIZE = 30;
+
+// Window of recent blocks kept fresh purely to feed the header's block-rate estimator (see eta.ts).
+// 144 = one mainnet day; on regtest it is simply "plenty". Held separately from `blocks` because
+// that list grows downwards with pagination and only its top page is refreshed.
+const RECENT_WINDOW = 144;
 
 // Aligned chunk size for range fetches. Windows shift by ~1 height per frame while
 // scrolling, so we fetch in fixed aligned chunks and dedupe in-flight chunks to
@@ -35,6 +40,13 @@ interface StoreState {
   blocksError: string | null;
   initialized: boolean;
 
+  /** Most recent blocks, tip-first — the sample the header clock estimates block rate from. */
+  recentBlocks: Block[];
+  /** True once the first recent-window fetch has settled, successfully or not. Until then the
+   *  header cannot know which countdown face to show, and must show neither rather than flashing
+   *  the wrong one. */
+  recentLoaded: boolean;
+
   // Isometric-chain data: contiguous height space keyed by height.
   tipHeight: number | null;
   pruneFloor: number | null;
@@ -43,6 +55,12 @@ interface StoreState {
 
   refreshState: () => Promise<void>;
   refreshTop: () => Promise<void>;
+  refreshRecent: () => Promise<void>;
+  /** Apply a WebSocket push frame. Returns true when the frame could NOT be applied completely and
+   *  the caller should fall back to HTTP — either it carried no payload, or the pushed blocks do not
+   *  abut the recent window (the client missed more blocks than a frame carries), which would leave
+   *  the block-rate estimator measuring across a hole. */
+  applyPush: (frame: PushFrame) => boolean;
   loadMore: () => Promise<void>;
   bootstrap: () => Promise<void>;
   // Fill blocksByHeight for the inclusive window [from, to]. Fetches only the
@@ -66,6 +84,9 @@ export const useStore = create<StoreState>((set, get) => ({
   loadingMore: false,
   blocksError: null,
   initialized: false,
+
+  recentBlocks: [],
+  recentLoaded: false,
 
   tipHeight: null,
   pruneFloor: null,
@@ -104,6 +125,63 @@ export const useStore = create<StoreState>((set, get) => ({
     }
   },
 
+  refreshRecent: async () => {
+    try {
+      const page = await fetchBlocks({ limit: RECENT_WINDOW });
+      // Replaced wholesale rather than merged: on a reorg the estimator must not keep timestamps
+      // from blocks that are no longer on the chain it is measuring.
+      set({ recentBlocks: page.blocks, recentLoaded: true });
+    } catch {
+      // Non-fatal: the clock simply keeps its last estimate. Surfacing this would duplicate the
+      // errors already reported by refreshState/refreshTop. Still mark it settled, or a permanently
+      // failing fetch would leave the header stuck showing nothing.
+      set({ recentLoaded: true });
+    }
+  },
+
+  applyPush: (frame) => {
+    const pushed = frame.blocks ?? [];
+    if (!frame.state && pushed.length === 0) return true; // payload-less frame: caller refetches
+
+    let gap = false;
+    set((s) => {
+      const next: Partial<StoreState> = {};
+
+      if (frame.state) {
+        next.state = frame.state;
+        next.stateError = null;
+        next.stateLoading = false;
+        if (typeof frame.state.tip_height === 'number') next.tipHeight = frame.state.tip_height;
+        if (typeof frame.state.prune_floor === 'number') next.pruneFloor = frame.state.prune_floor;
+      }
+
+      if (pushed.length) {
+        const minH = Math.min(...pushed.map((b) => b.height));
+
+        next.blocks = mergeBlocks(s.blocks, pushed);
+
+        const byHeight = new Map(s.blocksByHeight);
+        for (const b of pushed) byHeight.set(b.height, b);
+        next.blocksByHeight = byHeight;
+
+        // Everything at or above the pushed window is replaced wholesale rather than merged: on a
+        // reorg the estimator must not keep timestamps from blocks that left the chain.
+        const kept = s.recentBlocks.filter((b) => b.height < minH);
+        // If what we keep does not sit directly below the pushed window, the client missed more
+        // blocks than a frame carries and the window is discontinuous — signal a refetch.
+        if (kept.length > 0 && kept[0].height !== minH - 1) gap = true;
+        next.recentBlocks = [...pushed, ...kept]
+          .sort((a, b) => b.height - a.height)
+          .slice(0, RECENT_WINDOW);
+        next.recentLoaded = true;
+        next.blocksError = null;
+      }
+
+      return next;
+    });
+    return gap;
+  },
+
   loadMore: async () => {
     const { loadingMore, hasMore, blocks } = get();
     if (loadingMore || !hasMore) return;
@@ -124,6 +202,9 @@ export const useStore = create<StoreState>((set, get) => ({
 
   bootstrap: async () => {
     await get().refreshState();
+    // Kicked off before the range fetch is awaited: the header shows neither countdown face until
+    // this settles, so any delay here is dead space at the top of the page.
+    void get().refreshRecent();
     // Seed the isometric window near the tip; this also gives us prune_floor.
     const tip = get().tipHeight;
     if (typeof tip === 'number') {

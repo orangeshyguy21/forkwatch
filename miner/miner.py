@@ -30,6 +30,7 @@ INTERVAL = float(os.environ.get("MINE_INTERVAL_SECS", "3"))
 FORK_AT = int(os.environ.get("FORK_AT_HEIGHT", "560"))
 PRE_FORK_BLOCKS = int(os.environ.get("PRE_FORK_BLOCKS", "18"))
 KNOTS_PER_100 = max(0, min(100, int(os.environ.get("KNOTS_PER_100", "1"))))  # Knots blocks per 100
+VIOLATION_BYTES = int(os.environ.get("VIOLATION_BYTES", "200"))  # OP_RETURN payload; >83 breaks rule 1
 
 _AUTH = "Basic " + base64.b64encode(f"{USER}:{PASS}".encode()).decode()
 
@@ -112,7 +113,7 @@ def core_mature_balance():
 
 
 def mine_violating_block(caddr):
-    payload = "ab" * 200  # 200-byte OP_RETURN -> ~203-byte scriptPubKey (RDTS rule 1)
+    payload = "ab" * VIOLATION_BYTES  # N-byte OP_RETURN -> ~N+3-byte scriptPubKey (RDTS rule 1)
     raw = rpc(CORE, "createrawtransaction", [[], [{"data": payload}]])
     funded = rpc(CORE, "fundrawtransaction", [raw])["hex"]
     signed = rpc(CORE, "signrawtransactionwithwallet", [funded])["hex"]
@@ -131,7 +132,7 @@ def mines_knots(block_index):
 
 def main():
     log(f"config: interval={INTERVAL}s fork_at={FORK_AT} pre_fork={PRE_FORK_BLOCKS} "
-        f"knots_per_100={KNOTS_PER_100}")
+        f"knots_per_100={KNOTS_PER_100} violation_bytes={VIOLATION_BYTES}")
     wait_rpc()
     ensure_wallet(CORE)
     ensure_wallet(KNOTS)
@@ -144,9 +145,14 @@ def main():
         while not rdts_active():
             mine(KNOTS, 10, kaddr)
     log(f"RDTS active (Knots height {h(KNOTS)})")
-    if core_mature_balance() < 1.0:
-        log("funding Core (101 blocks to a Core address)...")
-        mine(CORE, 101, caddr)
+    # Deliberately NOT self-funding here. The regtest subsidy halves every 150 blocks and is 0 by
+    # ~4950, so mining coins at these heights yields nothing spendable — and mining 101 blocks to
+    # try would silently burn the pre-fork countdown the reset just staged. scripts/regtest.sh
+    # mines the funding at height ~450 and verifies it before handing the chain over.
+    bal = core_mature_balance()
+    if bal < 1.0:
+        log(f"ERROR: Core has {bal} spendable BTC — the RDTS-violating tx cannot be funded and the "
+            f"fork will not happen. Rebuild with: bash scripts/regtest.sh reset")
 
     height = h(CORE)
     fork_h = FORK_AT if FORK_AT > height else height + PRE_FORK_BLOCKS

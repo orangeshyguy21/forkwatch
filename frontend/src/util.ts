@@ -32,6 +32,22 @@ export function clsx(...parts: Array<string | false | null | undefined>): string
   return parts.filter(Boolean).join(' ');
 }
 
+// Block-height format for the rails: no "#", no commas — digits grouped by 3 with a space.
+// 908160 -> "908 160", 896205 -> "896 205".
+export function fmtHeight(h: number): string {
+  return Math.round(h)
+    .toString()
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+}
+
+/** Round x up to a 1/2/5×10ⁿ step — tick spacing that lands on round numbers. */
+export function niceStep(x: number): number {
+  const p = Math.pow(10, Math.floor(Math.log10(Math.max(1, x))));
+  const f = x / p;
+  const n = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10;
+  return n * p;
+}
+
 /** Best-effort tidy-up of a coinbase tag for display. A stored tag can carry trailing extranonce /
  *  merkle bytes that happen to be printable, which surface as a spray of short random tokens
  *  (`… wmklasson4/ m[u oX ;% h j K Y`). Keep the meaningful prefix — everything up to the last token

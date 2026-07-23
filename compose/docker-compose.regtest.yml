@@ -1,4 +1,7 @@
 # Forkwatch — regtest / e2e stack.
+# Tunables come from compose/regtest.env (+ compose/.regtest.runtime.env for reset-derived values).
+# Drive this file through scripts/regtest.sh, which passes both --env-file s; the defaults below
+# only apply to a bare `docker compose -f` invocation.
 # Two peered nodes on regtest (no Tor, no pruning, no snapshot). Core accepts everything;
 # Knots enforces RDTS. The e2e driver forces the fork on demand. Dev-only (not exposed on the LAN).
 name: forkwatch-regtest
@@ -50,11 +53,24 @@ services:
       - KNOTS_RPC_URL=http://knots:18443
       - RPC_USER=forkwars
       - RPC_PASS=forkwars_regtest
-      - POLL_MS=2000
+      - POLL_MS=${POLL_MS:-2000}
       - BIND=0.0.0.0:8080
       - NETWORK=regtest
-      - FORK_AT_HEIGHT=560   # keep in sync with the miner; drives the UI "fork scheduled" countdown
+      # Derived at reset time into compose/.regtest.runtime.env — see scripts/regtest.sh. RDTS
+      # activation lands on an unpredictable height, so these cannot be fixed constants.
+      - FORK_AT_HEIGHT=${FORK_AT_HEIGHT:-6048}
+      # Mirror of the mainnet deployment's shape, derived by the reset: floor and fork both land on
+      # retarget boundaries, VISIBLE_EPOCHS apart, so epoch/ETA code paths behave as on mainnet.
+      - FLOOR_HEIGHT=${FLOOR_HEIGHT:-0}
+      - RETARGET_INTERVAL=${RETARGET_INTERVAL:-2016}
+      # Set here (unlike a plain regtest, where retargeting does not bind) because the reset dates
+      # every block exactly BLOCK_SPACING_SECS apart — so this is the true spacing, not a fiction.
+      - TARGET_SPACING_SECS=${BLOCK_SPACING_SECS:-20}
+      - FORK_LABEL=${FORK_LABEL:-Scheduled fork}
       - DB_PATH=/data/forkwars.db
+    # Image runs as uid 10001. One-time chown for the pre-existing root-owned volume:
+    #   docker run --rm -v forkwars-regtest_app-db:/data alpine chown -R 10001:10001 /data
+    # (or just `down -v`, since regtest history is reproducible).
     volumes:
       - app-db:/data
     ports:
@@ -74,10 +90,11 @@ services:
       - KNOTS_RPC_URL=http://knots:18443
       - RPC_USER=forkwars
       - RPC_PASS=forkwars_regtest
-      - MINE_INTERVAL_SECS=15   # seconds between blocks (slow, watchable cadence)
-      - FORK_AT_HEIGHT=560     # preprogrammed fork height (must match the app service)
-      - PRE_FORK_BLOCKS=18     # fallback pre-fork window if setup already passed FORK_AT_HEIGHT
-      - KNOTS_PER_100=1        # Knots (BIP-110) hashrate: blocks Knots mines per 100 (~1%)
+      - MINE_INTERVAL_SECS=${BLOCK_SPACING_SECS:-20}   # live cadence == the spacing the history was dated at
+      - FORK_AT_HEIGHT=${FORK_AT_HEIGHT:-6048}   # preprogrammed fork height (must match the app service)
+      - PRE_FORK_BLOCKS=${PRE_FORK_BLOCKS:-18}     # fallback pre-fork window if setup already passed FORK_AT_HEIGHT
+      - KNOTS_PER_100=${KNOTS_PER_100:-1}        # Knots (BIP-110) hashrate: blocks Knots mines per 100 (~1%)
+      - VIOLATION_BYTES=${VIOLATION_BYTES:-200}   # OP_RETURN payload size in the fork-triggering tx
     networks: [fwnet]
 
 networks:

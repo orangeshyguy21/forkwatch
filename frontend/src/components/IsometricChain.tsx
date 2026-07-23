@@ -22,9 +22,10 @@ import { useScrollFocus } from '../hooks/useScrollFocus';
 import { useStore } from '../store';
 import type { Block, ViolationsResponse } from '../types';
 import { cleanCoinbaseTag, clsx, formatBytes, formatInt, relativeTime, shortHash } from '../util';
+import { EpochRail } from './EpochRail';
 import { IsoBlock } from './IsoBlock';
 import { ScrollRail } from './ScrollRail';
-import { StickerIcon } from './ViolationStickers';
+import { SIGNAL_LABEL, SignalStickerIcon, StickerIcon } from './ViolationStickers';
 
 /** Fly-number reveal: how "flying" (0..1) it must be, and how long that must hold, before the big
  *  centered height number pops up — so a quick flick or a couple of notches doesn't flash it. */
@@ -289,9 +290,9 @@ export function IsometricChain() {
   const H = dims.h;
   const W = dims.w;
   const anchorY = H * ANCHOR;
-  // Centre the chain column in the viewport (non-fork sits a touch right of the area centre so it
-  // reads as page-centred once the right-side height labels are accounted for).
-  const baseX = W * (forked ? 0.5 : 0.53);
+  // Centre the chain column in the viewport. The epoch rail (left) and timeline rail (right) are
+  // the same width, so the viewport centre IS the page centre — the chain lines up under the clock.
+  const baseX = W * 0.5;
 
   // Vertical window: a bounded band of CONSECUTIVE blocks centered on the focus (stride 1). The
   // fisheye tunnel shrinks distant blocks; we cap how many we mount and cull off-screen ones below.
@@ -510,6 +511,19 @@ export function IsometricChain() {
 
   return (
     <div className="relative flex min-h-0 flex-1">
+      {/* Left rail: the current epoch zoomed — signaling tally, per-block signal markers, and a
+          seek scoped to this epoch. Same width as the right rail, which centres the chain. */}
+      {!notReady && state && (
+        <EpochRail
+          tip={tip}
+          dataFloor={floor}
+          focus={target}
+          signaling={state.signaling}
+          forkHeight={forked ? forkAt : null}
+          onSeek={(h) => setTarget(h, true)}
+        />
+      )}
+
       {/* Details panel PUSHES the chain aside (in-flow). Its width animates 0↔DRAWER_W so the whole
           view reflows smoothly; the inner panel keeps a fixed width and is revealed/clipped. */}
       <div
@@ -800,7 +814,6 @@ function BlockSection({ side, block }: { side: 'core' | 'knots' | 'shared'; bloc
         <Row label="size" value={formatBytes(block.size)} />
         <Row label="weight" value={formatInt(block.weight)} />
         <Row label="version" value={`0x${block.version.toString(16)}`} mono />
-        <Row label="signals bit-4" value={block.signals_110 ? 'yes' : 'no'} />
         <Row label="RDTS verdict" value={block.rdts_verdict} mono />
       </div>
 
@@ -814,6 +827,24 @@ function BlockSection({ side, block }: { side: 'core' | 'knots' | 'shared'; bloc
             className="max-h-16 overflow-y-auto break-all rounded border border-white/10 bg-black/40 px-2 py-1 font-mono text-[10.5px] leading-snug text-zinc-400"
           >
             {cleanCoinbaseTag(block.coinbase_tag)}
+          </div>
+        </div>
+      )}
+
+      {/* Signaling badge — the counterpart to the violations panel below, and the sidebar echo of
+          the sticker on the block's flank. Its presence IS the answer, so the old yes/no row is
+          gone: a non-signaling block simply has no badge, exactly as a clean block has no
+          violations panel. */}
+      {block.signals_110 && (
+        <div className="mt-3 flex items-center gap-2.5 rounded-md border border-emerald-500/25 bg-emerald-500/[0.06] px-2.5 py-2">
+          <div className="shrink-0">
+            <SignalStickerIcon size={26} />
+          </div>
+          <div className="min-w-0">
+            <div className="text-[11.5px] font-semibold text-emerald-200">Signals BIP-110</div>
+            <div className="text-[10.5px] text-zinc-500" title={SIGNAL_LABEL}>
+              bit 4 set in the block version
+            </div>
           </div>
         </div>
       )}

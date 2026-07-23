@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { IsometricChain } from './components/IsometricChain';
-import { StatusBanner } from './components/StatusBanner';
+import { Header } from './components/Header';
 import { useChainSocket } from './hooks/useChainSocket';
 import { useStore } from './store';
 
@@ -17,7 +17,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden">
-      <StatusBanner state={state} error={stateError} />
+      <Header state={state} error={stateError} />
       <main className="flex min-h-0 flex-1 overflow-hidden">
         <IsometricChain />
       </main>

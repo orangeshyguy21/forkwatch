@@ -2,30 +2,57 @@ use crate::db;
 use crate::model::{AppState, Block, NodeInfo};
 use crate::rdts;
 use crate::rpc::Rpc;
+use parking_lot::RwLock;
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
+use tracing::{debug, error, info, warn};
 
-const TIP_MAX: usize = 1000; // max new blocks pulled from a tip per poll
+/// Max new blocks pulled from a tip per poll. Deliberately small: catch-up after downtime is the job
+/// of the backfill pass below (BACKFILL_BATCH per poll), and a large tip walk would monopolize the
+/// ingest loop for one poll while contributing nothing the backfill would not.
+const TIP_MAX: usize = 25;
 const BACKFILL_BATCH: usize = 200; // older blocks pulled toward the prune floor per poll
 const MINER_BACKFILL_BATCH: usize = 40; // retained blocks re-scanned for coinbase/miner data per poll
+/// Hard ceiling on `getrawtransaction` lookups per block during prevout resolution. A mainnet block
+/// has thousands of distinct inputs; resolving them serially inside a poll window wedges ingest
+/// outright. Rule 3 coverage is best-effort by design, so truncating is the correct failure mode.
+const PREVOUT_MAX_LOOKUPS: usize = 200;
+/// Newest blocks carried in each WebSocket push frame. Enough to cover a short client gap or a
+/// shallow reorg without a refetch; small enough that the frame stays a few KB.
+const PUSH_BLOCKS: i64 = 8;
 
 pub struct Nodes {
     pub core: Rpc,
     pub knots: Rpc,
     pub scheduled_fork_height: Option<i64>,
+    /// What the countdown is counting down TO, for the header to name. The event differs by network:
+    /// on mainnet it is BIP-110 mandatory signaling; on regtest it is the demo miner's staged fork.
+    pub scheduled_fork_label: Option<String>,
+    /// Protocol target block interval in seconds (mainnet 600). Set only where difficulty
+    /// retargeting actually binds — leaving it unset (regtest) makes the ETA trust measurement
+    /// alone, which is correct there because regtest difficulty never constrains the miner.
+    pub target_spacing_secs: Option<i64>,
+    /// Blocks per difficulty epoch (mainnet 2016).
+    pub retarget_interval: i64,
     /// Hard floor for the visualization: never ingest/serve below this height (0 = node prune floor).
     /// Focuses the app on a relevant window (e.g. the first epoch RDTS signaling was possible).
     pub floor_height: i64,
+    /// Whether to resolve spent-output scriptPubKeys for RDTS rule 3. `None` = decide by network,
+    /// which enables it on regtest only. This must NOT be inferred from RDTS being active: activation
+    /// on mainnet would otherwise turn every block into thousands of serial `getrawtransaction`
+    /// calls that all fail under `txindex=0` — at exactly the moment the app matters most.
+    /// Set `RESOLVE_PREVOUTS=1` only alongside `txindex=1`.
+    pub resolve_prevouts: Option<bool>,
 }
 
 pub fn spawn(
     state: Arc<RwLock<AppState>>,
-    tx: broadcast::Sender<()>,
+    tx: broadcast::Sender<Arc<str>>,
     nodes: Nodes,
     poll_ms: u64,
     conn: Option<Connection>,
@@ -38,38 +65,46 @@ pub fn spawn(
             match db::load_all(c) {
                 Ok(blocks) => {
                     let n = blocks.len();
-                    let mut g = state.write().unwrap();
+                    let mut g = state.write();
                     for b in blocks {
                         g.by_hash.insert(b.hash.clone(), b);
                     }
                     drop(g);
-                    println!("[ingest] warmed {n} blocks from db");
-                    let _ = tx.send(());
+                    info!(blocks = n, "warmed in-memory index from db");
                 }
-                Err(e) => eprintln!("[ingest] db load_all failed: {e:#}"),
+                Err(e) => error!(error = format!("{e:#}"), "db load_all failed"),
             }
         }
         loop {
+            let started = Instant::now();
             match poll_once(&state, &nodes, conn.as_ref()) {
-                Ok(changed) => {
-                    if changed {
-                        let _ = tx.send(());
+                Ok(frame) => {
+                    state.write().last_poll_ok = Some(Instant::now());
+                    if let Some(frame) = frame {
+                        let _ = tx.send(frame);
                     }
+                    debug!(elapsed_ms = started.elapsed().as_millis() as u64, "poll complete");
                 }
-                Err(e) => eprintln!("[ingest] poll error: {e:#}"),
+                Err(e) => error!(error = format!("{e:#}"), "poll failed"),
             }
             thread::sleep(Duration::from_millis(poll_ms));
         }
     });
 }
 
-fn poll_once(state: &Arc<RwLock<AppState>>, nodes: &Nodes, conn: Option<&Connection>) -> anyhow::Result<bool> {
+/// One ingest pass. Returns the WebSocket push frame when anything observable changed, so the caller
+/// broadcasts exactly the bytes clients need — no fan-out of HTTP refetches (§5.1).
+fn poll_once(
+    state: &Arc<RwLock<AppState>>,
+    nodes: &Nodes,
+    conn: Option<&Connection>,
+) -> anyhow::Result<Option<Arc<str>>> {
     let core_info = node_info(&nodes.core, "Bitcoin Core").unwrap_or_else(|e| {
-        eprintln!("[ingest] core offline: {e:#}");
+        warn!(node = "core", error = format!("{e:#}"), "node unreachable");
         NodeInfo { label: "Bitcoin Core".into(), online: false, ..Default::default() }
     });
     let knots_info = node_info(&nodes.knots, "Bitcoin Knots").unwrap_or_else(|e| {
-        eprintln!("[ingest] knots offline: {e:#}");
+        warn!(node = "knots", error = format!("{e:#}"), "node unreachable");
         NodeInfo { label: "Bitcoin Knots".into(), online: false, ..Default::default() }
     });
 
@@ -92,15 +127,18 @@ fn poll_once(state: &Arc<RwLock<AppState>>, nodes: &Nodes, conn: Option<&Connect
         base_floor
     };
 
-    let mut changed = false;
+    // Rule 3 needs one `getrawtransaction` per distinct input, which only resolves under txindex=1.
+    // Decided by NETWORK, never by whether RDTS happens to be active — see `Nodes::resolve_prevouts`.
+    let prevouts_ok = nodes.resolve_prevouts.unwrap_or(core_info.chain == "regtest");
 
-    // 1. Tip sync (short; usually 0-1 new blocks). Held under the write lock.
-    {
-        let mut g = state.write().unwrap();
-        let a = fetch_tip_down(&nodes.core, &core_info.bestblockhash, core_info.blocks, &mut g.by_hash, conn, backfill_target, activation, TIP_MAX);
-        let b = fetch_tip_down(&nodes.knots, &knots_info.bestblockhash, knots_info.blocks, &mut g.by_hash, conn, backfill_target, activation, TIP_MAX);
-        changed = a > 0 || b > 0;
-    }
+    // 1. Tip sync (short; usually 0-1 new blocks). Every RPC here happens with NO lock held — the
+    //    lock is taken per block, only long enough to test membership or insert. Holding it across
+    //    the fetch would stall every reader for the length of a catch-up walk.
+    let mut changed = {
+        let a = fetch_tip_down(&nodes.core, &core_info.bestblockhash, core_info.blocks, state, conn, backfill_target, activation, prevouts_ok, TIP_MAX);
+        let b = fetch_tip_down(&nodes.knots, &knots_info.bestblockhash, knots_info.blocks, state, conn, backfill_target, activation, prevouts_ok, TIP_MAX);
+        a > 0 || b > 0
+    };
 
     // 1b. Miner backfill for the node's still-retained near-tip window. Blocks cached before this
     // feature existed (and freshly warmed history within the node's retained range) carry no
@@ -110,7 +148,7 @@ fn poll_once(state: &Arc<RwLock<AppState>>, nodes: &Nodes, conn: Option<&Connect
     {
         let retain_floor = core_info.prune_height.max(0);
         let candidates: Vec<(String, i64)> = {
-            let g = state.read().unwrap();
+            let g = state.read();
             let core_map = build_height_map(&g.by_hash, &core_info.bestblockhash);
             let mut v: Vec<(String, i64)> = core_map
                 .iter()
@@ -124,10 +162,10 @@ fn poll_once(state: &Arc<RwLock<AppState>>, nodes: &Nodes, conn: Option<&Connect
         if !candidates.is_empty() {
             let refreshed: Vec<Block> = candidates
                 .into_iter()
-                .filter_map(|(hash, h)| fetch_one(&nodes.core, &hash, h, activation))
+                .filter_map(|(hash, h)| fetch_one(&nodes.core, &hash, h, activation, prevouts_ok))
                 .collect();
             if !refreshed.is_empty() {
-                let mut g = state.write().unwrap();
+                let mut g = state.write();
                 for b in refreshed {
                     if let Some(c) = conn {
                         let _ = db::upsert(c, &b);
@@ -141,7 +179,7 @@ fn poll_once(state: &Arc<RwLock<AppState>>, nodes: &Nodes, conn: Option<&Connect
 
     // 2. Backfill history downward toward the prune floor. Fetch lock-free, insert under lock.
     let start = {
-        let g = state.read().unwrap();
+        let g = state.read();
         let core_map = build_height_map(&g.by_hash, &core_info.bestblockhash);
         core_map.keys().min().copied().and_then(|low| {
             if low > backfill_target {
@@ -155,9 +193,9 @@ fn poll_once(state: &Arc<RwLock<AppState>>, nodes: &Nodes, conn: Option<&Connect
         })
     };
     if let Some((parent, ph)) = start {
-        let fetched = fetch_batch(&nodes.core, &parent, ph, backfill_target, activation, BACKFILL_BATCH);
+        let fetched = fetch_batch(&nodes.core, &parent, ph, backfill_target, activation, prevouts_ok, BACKFILL_BATCH);
         if !fetched.is_empty() {
-            let mut g = state.write().unwrap();
+            let mut g = state.write();
             for b in fetched {
                 if let Some(c) = conn {
                     let _ = db::upsert(c, &b);
@@ -173,29 +211,36 @@ fn poll_once(state: &Arc<RwLock<AppState>>, nodes: &Nodes, conn: Option<&Connect
     // available (not just the near-tip cap) for /api/blocks/range?chain=knots — so each node's
     // perspective of the fork can be visualized end to end.
     {
-        let mut g = state.write().unwrap();
-        let knots_map = build_height_map(&g.by_hash, &knots_info.bestblockhash);
-        if let Some(&low) = knots_map.keys().min() {
-            if low > backfill_target {
-                let parent = knots_map
-                    .get(&low)
-                    .and_then(|hash| g.by_hash.get(hash))
-                    .map(|b| b.prev_hash.clone());
-                if let Some(parent) = parent {
-                    let n = fetch_tip_down(
-                        &nodes.knots, &parent, low - 1, &mut g.by_hash, conn, backfill_target, activation, BACKFILL_BATCH,
-                    );
-                    if n > 0 {
-                        changed = true;
-                    }
+        // Resolve the walk's starting point under a read guard, then release it: the fetch loop below
+        // acquires the lock per block rather than holding it across RPC (same reason as step 1).
+        let start = {
+            let g = state.read();
+            let knots_map = build_height_map(&g.by_hash, &knots_info.bestblockhash);
+            knots_map.keys().min().copied().and_then(|low| {
+                if low > backfill_target {
+                    knots_map
+                        .get(&low)
+                        .and_then(|hash| g.by_hash.get(hash))
+                        .map(|b| (b.prev_hash.clone(), low - 1))
+                } else {
+                    None
                 }
+            })
+        };
+        if let Some((parent, ph)) = start {
+            let n = fetch_tip_down(
+                &nodes.knots, &parent, ph, state, conn, backfill_target, activation, prevouts_ok, BACKFILL_BATCH,
+            );
+            if n > 0 {
+                changed = true;
             }
         }
     }
 
-    // 3. Rebuild chain maps + state snapshot under the write lock.
-    {
-        let mut g = state.write().unwrap();
+    // 3. Rebuild chain maps + state snapshot under the write lock. No RPC happens here, so the guard
+    //    is held only for CPU-bound work bounded by the size of the chain map.
+    let frame = {
+        let mut g = state.write();
         let core_map = build_height_map(&g.by_hash, &core_info.bestblockhash);
         let knots_map = build_height_map(&g.by_hash, &knots_info.bestblockhash);
         let core_tip_h = core_map.keys().max().copied().unwrap_or(-1);
@@ -217,7 +262,9 @@ fn poll_once(state: &Arc<RwLock<AppState>>, nodes: &Nodes, conn: Option<&Connect
 
         let mut sj = build_state_json(
             &g.by_hash, &core_map, &knots_map, &core_info, &knots_info, &core_tips, &knots_tips,
-            &rdts_status, rdts_since, rdts_bit, nodes.scheduled_fork_height, core_tip_h, knots_tip_h,
+            &rdts_status, rdts_since, rdts_bit, nodes.scheduled_fork_height,
+            nodes.scheduled_fork_label.as_deref(), nodes.target_spacing_secs,
+            nodes.retarget_interval, core_tip_h, knots_tip_h,
             serve_floor, signaling_stats,
         );
         // The CONFIGURED display floor (0 = none). The rail spans [floor_height, tip] to draw the full
@@ -226,6 +273,17 @@ fn poll_once(state: &Arc<RwLock<AppState>>, nodes: &Nodes, conn: Option<&Connect
         if let Some(o) = sj.as_object_mut() {
             o.insert("floor_height".to_string(), json!(nodes.floor_height));
         }
+
+        // The push frame: everything a client used to fetch in three requests per block. Built once
+        // per poll and shared by every socket, so a new block costs O(clients) bytes and 0 requests.
+        let push_blocks: Vec<Value> = ((core_tip_h - PUSH_BLOCKS + 1).max(serve_floor)..=core_tip_h)
+            .rev()
+            .filter_map(|h| core_map.get(&h).and_then(|hash| g.by_hash.get(hash)))
+            .map(|b| block_json(b, &core_map, &knots_map, &core_tips, &knots_tips))
+            .collect();
+        let frame: Arc<str> = Arc::from(
+            json!({ "type": "update", "state": sj, "blocks": push_blocks }).to_string().as_str(),
+        );
 
         g.core_by_height = core_map;
         g.knots_by_height = knots_map;
@@ -237,9 +295,11 @@ fn poll_once(state: &Arc<RwLock<AppState>>, nodes: &Nodes, conn: Option<&Connect
         g.core = core_info;
         g.knots = knots_info;
         g.state_json = sj;
-    }
+        g.push_frame = Some(frame.clone());
+        frame
+    };
 
-    Ok(changed)
+    Ok(if changed { Some(frame) } else { None })
 }
 
 fn node_info(rpc: &Rpc, label: &str) -> anyhow::Result<NodeInfo> {
@@ -248,6 +308,7 @@ fn node_info(rpc: &Rpc, label: &str) -> anyhow::Result<NodeInfo> {
     let conns = rpc.call("getconnectioncount", json!([])).ok().and_then(|v| v.as_i64()).unwrap_or(0);
     Ok(NodeInfo {
         label: label.to_string(),
+        chain: bci.get("chain").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         version: ni.get("subversion").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         blocks: bci.get("blocks").and_then(|v| v.as_i64()).unwrap_or(0),
         headers: bci.get("headers").and_then(|v| v.as_i64()).unwrap_or(0),
@@ -281,18 +342,24 @@ fn is_zero_hash(h: &str) -> bool {
     h.is_empty() || h.chars().all(|c| c == '0')
 }
 
-/// Walk from a tip toward the prune floor, fetching+persisting blocks not yet in `by_hash`. Height is
+/// Walk from a tip toward the prune floor, fetching+persisting blocks not yet known. Height is
 /// tracked from `tip_height` and decremented per step (a serialized block doesn't carry its height).
 /// Stops at a known block, the prune floor, an RPC error (pruned/unavailable), or after `max`.
+///
+/// The lock is acquired per block — once to test membership, once to insert — and is **never held
+/// across the RPC**. A tip walk can take arbitrarily long (a node restart, a deep reorg, a slow
+/// peer); holding the write guard for its duration would stop every reader, i.e. take the API down
+/// under precisely the conditions where the dashboard matters most.
 #[allow(clippy::too_many_arguments)]
 fn fetch_tip_down(
     rpc: &Rpc,
     tip: &str,
     tip_height: i64,
-    by_hash: &mut HashMap<String, Block>,
+    state: &RwLock<AppState>,
     conn: Option<&Connection>,
     floor: i64,
     activation: Option<i64>,
+    resolve_prevouts: bool,
     max: usize,
 ) -> usize {
     if is_zero_hash(tip) {
@@ -301,13 +368,16 @@ fn fetch_tip_down(
     let mut cur = tip.to_string();
     let mut height = tip_height;
     let mut n = 0;
-    while n < max && height >= floor && !is_zero_hash(&cur) && !by_hash.contains_key(&cur) {
-        let Some(block) = fetch_one(rpc, &cur, height, activation) else { break };
+    while n < max && height >= floor && !is_zero_hash(&cur) {
+        if state.read().by_hash.contains_key(&cur) {
+            break;
+        }
+        let Some(block) = fetch_one(rpc, &cur, height, activation, resolve_prevouts) else { break };
         let prev = block.prev_hash.clone();
         if let Some(c) = conn {
             let _ = db::upsert(c, &block);
         }
-        by_hash.insert(block.hash.clone(), block);
+        state.write().by_hash.insert(block.hash.clone(), block);
         n += 1;
         height -= 1;
         cur = prev;
@@ -316,19 +386,21 @@ fn fetch_tip_down(
 }
 
 /// Lock-free walk of up to `max` blocks down from `start_hash` (`start_height`) toward the prune floor.
+#[allow(clippy::too_many_arguments)]
 fn fetch_batch(
     rpc: &Rpc,
     start_hash: &str,
     start_height: i64,
     floor: i64,
     activation: Option<i64>,
+    resolve_prevouts: bool,
     max: usize,
 ) -> Vec<Block> {
     let mut out = Vec::new();
     let mut cur = start_hash.to_string();
     let mut height = start_height;
     while out.len() < max && height >= floor && !is_zero_hash(&cur) {
-        let Some(block) = fetch_one(rpc, &cur, height, activation) else { break };
+        let Some(block) = fetch_one(rpc, &cur, height, activation, resolve_prevouts) else { break };
         let prev = block.prev_hash.clone();
         out.push(block);
         height -= 1;
@@ -340,16 +412,23 @@ fn fetch_batch(
 /// Fetch one RAW block (`getblock <hash> 0`) and parse it with rust-bitcoin — far faster than the
 /// verbosity-2 JSON (smaller transfer, native script scan). `height` is supplied by the caller since
 /// a serialized block carries no height.
-fn fetch_one(rpc: &Rpc, hash: &str, height: i64, activation: Option<i64>) -> Option<Block> {
+fn fetch_one(
+    rpc: &Rpc,
+    hash: &str,
+    height: i64,
+    activation: Option<i64>,
+    resolve: bool,
+) -> Option<Block> {
     let raw = rpc.call("getblock", json!([hash, 0])).ok()?;
     let hexs = raw.as_str()?;
     let bytes = hex::decode(hexs).ok()?;
     let b: bitcoin::Block = bitcoin::consensus::deserialize(&bytes).ok()?;
     let version = b.header.version.to_consensus() as i64;
     let signals_110 = (version & 0x2000_0000) != 0 && (version & (1 << 4)) != 0;
-    // Rule 3 needs the spent outputs' scriptPubKeys — resolve them only for post-activation blocks
-    // (regtest demo territory, where txindex is on). Everything else is witness-only.
-    let prevouts = if activation.map(|a| height >= a).unwrap_or(false) {
+    // Rule 3 needs the spent outputs' scriptPubKeys. Gated on `resolve` (network/config), not merely
+    // on post-activation height: on a txindex=0 node every lookup fails, so an unguarded pass would
+    // spend thousands of doomed round-trips per block.
+    let prevouts = if resolve && activation.map(|a| height >= a).unwrap_or(false) {
         resolve_prevouts(rpc, &b)
     } else {
         HashMap::new()
@@ -375,11 +454,16 @@ fn fetch_one(rpc: &Rpc, hash: &str, height: i64, activation: Option<i64>) -> Opt
 }
 
 /// Resolve the scriptPubKey of every non-coinbase input's spent output, for rule 3 (undefined witness
-/// version). Uses `getrawtransaction <txid> true` — works on regtest (txindex=1); best-effort, any
-/// input that can't be resolved is simply skipped. Only called for post-activation blocks, which in
-/// practice only occur on the small regtest demo chain, so the extra RPCs are cheap.
+/// version). Uses `getrawtransaction <txid> true`, which requires `txindex=1`; best-effort, any input
+/// that can't be resolved is simply skipped.
+///
+/// Bounded by `PREVOUT_MAX_LOOKUPS` regardless of caller. These calls are serial and synchronous
+/// inside the poll window, so an unbounded loop over a full block's inputs is an ingest stall, not a
+/// slow path. Truncation degrades rule-3 coverage for that block — the correct trade against a
+/// wedged loop, and the reason the caller also gates this on network.
 fn resolve_prevouts(rpc: &Rpc, block: &bitcoin::Block) -> HashMap<bitcoin::OutPoint, bitcoin::ScriptBuf> {
     let mut map = HashMap::new();
+    let mut lookups = 0usize;
     for tx in &block.txdata {
         if tx.is_coinbase() {
             continue;
@@ -389,6 +473,15 @@ fn resolve_prevouts(rpc: &Rpc, block: &bitcoin::Block) -> HashMap<bitcoin::OutPo
             if map.contains_key(&op) {
                 continue;
             }
+            if lookups >= PREVOUT_MAX_LOOKUPS {
+                warn!(
+                    block = %block.block_hash(),
+                    limit = PREVOUT_MAX_LOOKUPS,
+                    "prevout resolution truncated; rule 3 coverage is partial for this block"
+                );
+                return map;
+            }
+            lookups += 1;
             let Ok(res) = rpc.call("getrawtransaction", json!([op.txid.to_string(), true])) else {
                 continue;
             };
@@ -472,6 +565,9 @@ fn build_state_json(
     rdts_since: Option<i64>,
     rdts_bit: i64,
     scheduled_fork_height: Option<i64>,
+    scheduled_fork_label: Option<&str>,
+    target_spacing_secs: Option<i64>,
+    retarget_interval: i64,
     core_tip_h: i64,
     knots_tip_h: i64,
     prune_floor: i64,
@@ -492,13 +588,35 @@ fn build_state_json(
         h -= 1;
     }
 
-    // Distinguish a REAL fork from mere sync lag (one node just behind on the same chain).
-    // Real fork = Knots marks Core's tip invalid, or both nodes have blocks above the common ancestor.
-    let knots_rejects_core = knots_tips.get(&core.bestblockhash).map(|s| s == "invalid").unwrap_or(false);
-    let both_diverge = lca >= 0 && lca < core_tip_h && lca < knots_tip_h;
+    // Three distinct ways the nodes can disagree. Only the first is a chain SPLIT.
+    //
+    //   split    — both nodes hold a block at the same height with different hashes. Since `lca` is
+    //              the highest common block, both tips sitting above it means exactly that. This is
+    //              the definition: two competing blocks, not one node being ahead.
+    //   rejected — Knots marks Core's tip invalid but has not yet produced a competing block of its
+    //              own. The chains are already irreconcilable, but there is no rival block at the
+    //              same height *yet*, so it is not a split. Calling this "syncing" would be wrong.
+    //   syncing  — plain lag: one node is simply behind on the same chain. NOT a split.
+    // Knots reports Core's *tip* as invalid only in the instant before Core mines past it: a node
+    // never requests the descendants of a block it rejected, so once Core extends its branch its
+    // tip is simply ABSENT from Knots' chaintips — not invalid. Reading only the tip therefore
+    // downgrades a live fork to "syncing" one block after it happens. The durable signal is the
+    // rejected block itself: Core's first block above the last common one, which is precisely what
+    // Knots refused and keeps listed as an invalid tip.
+    let knots_rejects_core = knots_tips.get(&core.bestblockhash).map(|s| s == "invalid").unwrap_or(false)
+        || (lca >= 0
+            && core_map
+                .get(&(lca + 1))
+                .and_then(|h| knots_tips.get(h))
+                .map(|s| s == "invalid")
+                .unwrap_or(false));
     let have_both = !core.bestblockhash.is_empty() && !knots.bestblockhash.is_empty();
-    let real_fork = have_both && !agreed && (knots_rejects_core || both_diverge);
-    let syncing = have_both && !agreed && !real_fork;
+    let split = have_both && lca >= 0 && lca < core_tip_h && lca < knots_tip_h;
+    let rejected = have_both && !agreed && !split && knots_rejects_core;
+    let syncing = have_both && !agreed && !split && !rejected;
+    // The fork *payload* (branch blocks, Knots' view of Core's tip) is what the chain view renders,
+    // and it is meaningful as soon as the chains are irreconcilable — split or merely rejected.
+    let real_fork = split || rejected;
 
     // Cap branches shipped in /api/state to a near-tip window (the fisheye only shows a few dozen).
     // Deep forks (e.g. a long-running regtest demo) would otherwise bloat every poll. Full depth is
@@ -561,6 +679,8 @@ fn build_state_json(
         "knots": knots,
         "agreed": agreed,
         "syncing": syncing,
+        "split": split,
+        "rejected": rejected,
         "lca_height": if lca >= 0 { Value::from(lca) } else { Value::Null },
         "tip_height": tip_height,
         "prune_floor": prune_floor,
@@ -570,11 +690,29 @@ fn build_state_json(
             "window": window, "signaled": signaled, "total": total,
             "pct": pct, "threshold_pct": threshold_pct
         },
+        // Countdown target. `reached` is keyed on an actual SPLIT, not on mere disagreement: the two
+        // nodes fall out of sync for a moment on nearly every mainnet block as one hears it first,
+        // and that must not retire the clock.
         "scheduled_fork": scheduled_fork_height.map(|fh| json!({
             "height": fh,
+            "label": scheduled_fork_label,
             "blocks_until": (fh - core_tip_h).max(0),
-            "reached": !agreed || core_tip_h >= fh,
+            "reached": split || core_tip_h >= fh,
         })).unwrap_or(Value::Null),
+        // Difficulty geometry, so the ETA can stop extrapolating the *current* block rate past the
+        // point where it stops applying. A block's difficulty comes from its epoch, and the epoch
+        // turns over at heights divisible by `retarget_interval`; beyond that boundary the protocol
+        // pulls the interval back toward `target_spacing`, which is a far better predictor than any
+        // measurement of recent blocks. Null target_spacing = retargeting does not bind (regtest).
+        "pacing": {
+            "target_spacing": target_spacing_secs,
+            "retarget_interval": retarget_interval,
+            "next_retarget_height": if retarget_interval > 0 {
+                Value::from((core_tip_h / retarget_interval + 1) * retarget_interval)
+            } else {
+                Value::Null
+            },
+        },
     })
 }
 

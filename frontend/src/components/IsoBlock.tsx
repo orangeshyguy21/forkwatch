@@ -10,7 +10,7 @@ import {
 } from '../iso';
 import type { Block } from '../types';
 import { clsx, formatBytes, formatInt, shortHash } from '../util';
-import { ViolationStickers } from './ViolationStickers';
+import { SIGNAL_LABEL, SIGNAL_STICKER_BODY, ViolationStickers } from './ViolationStickers';
 
 interface Props {
   height: number;
@@ -87,11 +87,16 @@ const BODY_H = 66;
 // the base while the "pour" animation plays.
 const BODY_HEX = '0,25 50,50 100,25 100,91 50,116 0,91';
 
-// Map (u,v) in [0,1]^2 to a point on a cube FACE (viewBox coords), so markers drawn with these sit
-// flat on the block's flank, matching the isometric projection.
-//  left face:  origin (0,25),   u-axis (50,25),  v-axis (0,66)
-//  right face: origin (100,25),  u-axis (-50,25), v-axis (0,66)
-const L = (u: number, v: number) => `${(u * 50).toFixed(1)},${(25 + u * 25 + v * 66).toFixed(1)}`;
+// Face bases for markers painted flat onto a flank, as (u,v) in [0,1]^2 → viewBox coords:
+//  left face:  origin (0,25),   u-axis (50,25),  v-axis (0,66)  -> matrix(50,25,0,66,0,25)
+//  right face: origin (100,25), u-axis (-50,25), v-axis (0,66)  -> matrix(-50,25,0,66,100,25)
+
+// Signaling sticker footprint on the left face, in that face's (u,v) units. Chosen so the artwork
+// reads square: the u-axis is 55.9 viewBox units long and the v-axis 66, so u·55.9 ≈ v·66. Sized
+// ~25% over the old chevron marker's box because the die-cut border insets the coloured shape to
+// 75% of the footprint (rect 8→56 of 64), which would otherwise shrink the visible mark.
+const SIGNAL_U = 0.5;
+const SIGNAL_V = 0.42;
 
 interface VoxCell {
   top: number[] | null; // top-face quad, flattened [x0,y0 … x3,y3] (viewBox units); null on flank cells
@@ -500,21 +505,17 @@ function IsoBlockImpl({
 
         {/* Face markers ride on top of the contents. */}
         <g>
+          {/* BIP-110 signaling sticker, slapped onto the LEFT flank in that face's own plane.
+              `matrix(50,25,0,66,0,25)` is the left face's basis (see L above): it sends the unit
+              square to the parallelogram, so the sticker — cream die-cut border and all — shears
+              into perspective exactly like the hazard stickers on the right flank. The u/v extents
+              are picked so the artwork stays square on the face, since the face's two axes have
+              different screen lengths (|u| ≈ 55.9, |v| = 66). */}
           {block?.signals_110 && (
-            <g>
-              <polygon
-                points={`${L(0.14, 0.12)} ${L(0.54, 0.12)} ${L(0.54, 0.46)} ${L(0.14, 0.46)}`}
-                fill="#34d399"
-                stroke="rgba(6,60,42,0.85)"
-                strokeWidth={0.7}
-              />
-              {/* up-chevron = "signalling" */}
-              <polyline
-                points={`${L(0.2, 0.36)} ${L(0.34, 0.2)} ${L(0.48, 0.36)}`}
-                fill="none"
-                stroke="rgba(6,50,34,0.9)"
-                strokeWidth={1.4}
-              />
+            <g
+              transform={`matrix(50,25,0,66,0,25) translate(0.13,0.10) scale(${SIGNAL_U / 64},${SIGNAL_V / 64})`}
+            >
+              <g transform="rotate(-7 32 32)">{SIGNAL_STICKER_BODY}</g>
             </g>
           )}
         </g>
@@ -570,14 +571,29 @@ function IsoBlockImpl({
             <span>{formatInt(block.tx_count)} tx</span>
             <span>{formatBytes(block.size)}</span>
           </div>
-          {RDTS_TAG[block.rdts_verdict] && (
-            <div
-              className={clsx(
-                'mt-1 inline-block rounded border px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wider',
-                RDTS_TAG[block.rdts_verdict].cls,
+          {/* Verdict and allegiance chips. Signaling gets one here for the same reason a violation
+              does: the sticker on the flank can be turned away or too small to read at distance,
+              so the readout has to carry it too. */}
+          {(RDTS_TAG[block.rdts_verdict] || block.signals_110) && (
+            <div className="mt-1 flex flex-wrap items-center gap-1">
+              {RDTS_TAG[block.rdts_verdict] && (
+                <span
+                  className={clsx(
+                    'rounded border px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wider',
+                    RDTS_TAG[block.rdts_verdict].cls,
+                  )}
+                >
+                  {RDTS_TAG[block.rdts_verdict].label}
+                </span>
               )}
-            >
-              {RDTS_TAG[block.rdts_verdict].label}
+              {block.signals_110 && (
+                <span
+                  className="rounded border border-emerald-400/60 bg-emerald-500/10 px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-emerald-300"
+                  title={SIGNAL_LABEL}
+                >
+                  Signaling
+                </span>
+              )}
             </div>
           )}
         </div>

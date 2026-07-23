@@ -74,6 +74,20 @@ services:
       - DB_PATH=/data/forkwars.db
       # First epoch (2016-block boundary) where BIP-110/RDTS bit-4 signaling was possible.
       - FLOOR_HEIGHT=927360
+      # Countdown target: start of BIP-110's MANDATORY SIGNALING window (blocks 961,632–963,647).
+      # From this height BIP-110 nodes reject blocks that do not signal bit 4 — the point at which
+      # the chain can actually split. Later milestones (lock-in 963,648, active 965,664) are not
+      # tracked yet; see PLAN.md §10.
+      - FORK_AT_HEIGHT=961632
+      - FORK_LABEL=Mandatory signaling
+      # Difficulty geometry. Past the next retarget the ETA reverts to the 600s protocol target
+      # rather than extrapolating today's measured rate, which retargeting will erase anyway.
+      - TARGET_SPACING_SECS=600
+      - RETARGET_INTERVAL=2016
+    # The image runs as uid 10001, not root. The app-db volume predates that change and is
+    # root-owned, so it must be chowned ONCE before the first start on the new image or the app
+    # cannot write the cached history (which the node has pruned and cannot re-supply):
+    #   docker run --rm -v forkwars-mainnet_app-db:/data alpine chown -R 10001:10001 /data
     volumes:
       - app-db:/data
     ports:

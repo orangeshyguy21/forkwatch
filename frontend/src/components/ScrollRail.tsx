@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { EPOCH, clamp, epochOf } from '../iso';
-import { clsx } from '../util';
+import { clsx, fmtHeight, niceStep } from '../util';
 
 interface Props {
   tip: number;
@@ -13,21 +13,6 @@ interface Props {
   onSeek: (h: number) => void;
   onTip: () => void;
   onFork: () => void;
-}
-
-function niceStep(x: number): number {
-  const p = Math.pow(10, Math.floor(Math.log10(Math.max(1, x))));
-  const f = x / p;
-  const n = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10;
-  return n * p;
-}
-
-// Block-height format: no "#", no commas — digits grouped by 3 with a space.
-// 908160 -> "908 160", 896205 -> "896 205".
-function fmtHeight(h: number): string {
-  return Math.round(h)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
 }
 
 /**
