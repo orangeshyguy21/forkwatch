@@ -6,12 +6,24 @@
 # the cached-history DB survive the rename with zero copy / zero re-sync.
 name: forkwatch-mainnet
 
+# Log rotation and memory bounds — same reasoning as the prod stack: Docker's json-file driver is
+# unbounded by default (a multi-day IBD will grow it without limit), and two nodes doing concurrent
+# IBD can push the kernel into OOM-killing a bystander such as the app or nginx.
+# SIZING: defaults below assume the ~32 GB host this stack runs on. Override in compose/.env.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 services:
   tor:
     build:
       context: ../tor
     container_name: fw-tor-main
     restart: unless-stopped
+    mem_limit: ${FW_TOR_MEM_LIMIT:-256m}
+    logging: *logging
     networks: [fwnet]
 
   core:
@@ -19,6 +31,8 @@ services:
       context: ../nodes/core
     container_name: fw-core-main
     restart: unless-stopped
+    mem_limit: ${FW_NODE_MEM_LIMIT:-8g}
+    logging: *logging
     depends_on: [tor]
     environment:
       # RPC auth: the node entrypoint injects these into bitcoind so nothing is baked into the conf.
@@ -32,7 +46,10 @@ services:
       - ../snapshots:/snapshots:ro
     healthcheck:
       # CMD-SHELL so the credentials expand from the container env ($$ escapes compose interpolation).
-      test: ["CMD-SHELL", "bitcoin-cli -datadir=/data -rpcuser=\"$$RPC_USER\" -rpcpassword=\"$$RPC_PASS\" -rpcwait getblockchaininfo"]
+      # No credentials on the command line: bitcoind writes a .cookie (entrypoint configures rpcauth
+      # instead of -rpcpassword), and bitcoin-cli reads it from the datadir. This healthcheck runs
+      # every 15s, so passing the password here would keep it permanently visible in host `ps aux`.
+      test: ["CMD-SHELL", "bitcoin-cli -datadir=/data -rpcwait getblockchaininfo"]
       interval: 15s
       timeout: 10s
       retries: 60
@@ -43,6 +60,8 @@ services:
       context: ../nodes/knots
     container_name: fw-knots-main
     restart: unless-stopped
+    mem_limit: ${FW_NODE_MEM_LIMIT:-8g}
+    logging: *logging
     depends_on: [tor]
     environment:
       - RPC_USER=${FW_RPC_USER:-forkwars}
@@ -54,7 +73,10 @@ services:
       - ../nodes/knots/mainnet.conf:/data/bitcoin.conf:ro
       - ../snapshots:/snapshots:ro
     healthcheck:
-      test: ["CMD-SHELL", "bitcoin-cli -datadir=/data -rpcuser=\"$$RPC_USER\" -rpcpassword=\"$$RPC_PASS\" -rpcwait getblockchaininfo"]
+      # No credentials on the command line: bitcoind writes a .cookie (entrypoint configures rpcauth
+      # instead of -rpcpassword), and bitcoin-cli reads it from the datadir. This healthcheck runs
+      # every 15s, so passing the password here would keep it permanently visible in host `ps aux`.
+      test: ["CMD-SHELL", "bitcoin-cli -datadir=/data -rpcwait getblockchaininfo"]
       interval: 15s
       timeout: 10s
       retries: 60
@@ -64,8 +86,12 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
     container_name: fw-app-main
     restart: unless-stopped
+    mem_limit: ${FW_APP_MEM_LIMIT:-1g}
+    logging: *logging
     depends_on: [core, knots]
     # All values come from compose/.env (see compose/.env.example); the defaults below reproduce the
     # production deployment so a bare invocation still works — except FW_RPC_PASS, which is required.
@@ -81,6 +107,10 @@ services:
       # (the node has pruned those blocks — the SQLite cache is the only copy).
       - DB_PATH=${FW_DB_PATH:-/data/forkwars.db}
       - READY_MAX_STALE_SECS=${FW_READY_MAX_STALE_SECS:-60}
+      # Ceiling on concurrent WebSocket connections. Over-cap upgrades are refused with 503 and the
+      # client falls back to polling (which the edge cache absorbs) — bounding memory under a
+      # connection flood instead of accepting unbounded sockets.
+      - WS_MAX_CONNS=${FW_WS_MAX_CONNS:-5000}
       - RUST_LOG=${FW_RUST_LOG:-forkwars_backend=info,tower_http=warn,axum::rejection=warn}
       # First epoch (2016-block boundary) where BIP-110/RDTS bit-4 signaling was possible.
       - FLOOR_HEIGHT=${FW_FLOOR_HEIGHT:-927360}
@@ -109,6 +139,8 @@ services:
     image: nginx:alpine
     container_name: fw-nginx-main
     restart: unless-stopped
+    mem_limit: ${FW_NGINX_MEM_LIMIT:-256m}
+    logging: *logging
     depends_on: [app]
     ports:
       - "80:80"
@@ -123,6 +155,8 @@ services:
       context: ../mdns
     container_name: fw-mdns-main
     restart: unless-stopped
+    mem_limit: ${FW_MDNS_MEM_LIMIT:-128m}
+    logging: *logging
     network_mode: host
     # Share the host PID namespace so the D-Bus system bus sees matching peer credentials.
     pid: host

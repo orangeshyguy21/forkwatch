@@ -6,11 +6,20 @@
 # Knots enforces RDTS. The e2e driver forces the fork on demand. Dev-only (not exposed on the LAN).
 name: forkwatch-regtest
 
+# Docker's json-file log driver is unbounded by default. Regtest runs a continuous miner, so these
+# logs grow for as long as the stack is up — rotate them rather than letting them fill the disk.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
 services:
   core:
     build:
       context: ../nodes/core
     container_name: fw-core
+    logging: *logging
     restart: unless-stopped
     environment:
       # RPC auth: injected into bitcoind by the node entrypoint (no credential baked into the conf).
@@ -23,7 +32,10 @@ services:
     ports:
       - "18443:18443"   # Core RPC exposed to host for debugging/e2e driver
     healthcheck:
-      test: ["CMD-SHELL", "bitcoin-cli -datadir=/data -rpcuser=\"$$RPC_USER\" -rpcpassword=\"$$RPC_PASS\" -rpcwait getblockchaininfo"]
+      # No credentials on the command line: bitcoind writes a .cookie (entrypoint configures rpcauth
+      # instead of -rpcpassword), and bitcoin-cli reads it from the datadir. This healthcheck runs
+      # every 15s, so passing the password here would keep it permanently visible in host `ps aux`.
+      test: ["CMD-SHELL", "bitcoin-cli -datadir=/data -rpcwait getblockchaininfo"]
       interval: 5s
       timeout: 10s
       retries: 20
@@ -32,6 +44,7 @@ services:
     build:
       context: ../nodes/knots
     container_name: fw-knots
+    logging: *logging
     restart: unless-stopped
     environment:
       - RPC_USER=${FW_RPC_USER:-forkwars}
@@ -43,7 +56,10 @@ services:
     ports:
       - "18453:18443"   # Knots RPC exposed to host (remapped to avoid clashing with Core)
     healthcheck:
-      test: ["CMD-SHELL", "bitcoin-cli -datadir=/data -rpcuser=\"$$RPC_USER\" -rpcpassword=\"$$RPC_PASS\" -rpcwait getblockchaininfo"]
+      # No credentials on the command line: bitcoind writes a .cookie (entrypoint configures rpcauth
+      # instead of -rpcpassword), and bitcoin-cli reads it from the datadir. This healthcheck runs
+      # every 15s, so passing the password here would keep it permanently visible in host `ps aux`.
+      test: ["CMD-SHELL", "bitcoin-cli -datadir=/data -rpcwait getblockchaininfo"]
       interval: 5s
       timeout: 10s
       retries: 20
@@ -52,7 +68,10 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
     container_name: fw-app
+    logging: *logging
     restart: unless-stopped
     depends_on: [core, knots]
     environment:
@@ -74,6 +93,7 @@ services:
       # every block exactly BLOCK_SPACING_SECS apart — so this is the true spacing, not a fiction.
       - TARGET_SPACING_SECS=${BLOCK_SPACING_SECS:-20}
       - FORK_LABEL=${FORK_LABEL:-Scheduled fork}
+      - WS_MAX_CONNS=${WS_MAX_CONNS:-5000}
       - DB_PATH=/data/forkwars.db
     # Image runs as uid 10001. One-time chown for the pre-existing root-owned volume:
     #   docker run --rm -v forkwars-regtest_app-db:/data alpine chown -R 10001:10001 /data
@@ -90,6 +110,7 @@ services:
     build:
       context: ../miner
     container_name: fw-miner
+    logging: *logging
     restart: unless-stopped
     depends_on: [core, knots]
     environment:

@@ -12,6 +12,11 @@ const POLL_MIN_MS = 3000;
 const POLL_MAX_MS = 30000;
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
+// A connection must stay up this long before it counts as healthy enough to reset the backoff.
+// Resetting on `onopen` instead makes backoff useless against the case that matters: an origin that
+// completes the handshake and then immediately drops it (crash-looping backend, overloaded box)
+// would return every client to the 1s floor forever, i.e. a fixed-rate retry storm.
+const STABLE_AFTER_MS = 15000;
 
 export function useChainSocket() {
   const refreshState = useStore((s) => s.refreshState);
@@ -26,6 +31,21 @@ export function useChainSocket() {
     let reconnectDelay = RECONNECT_MIN_MS;
     let pollDelay = POLL_MIN_MS;
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    let stableTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const clearStable = () => {
+      if (stableTimer) {
+        clearTimeout(stableTimer);
+        stableTimer = null;
+      }
+    };
+
+    // Uniform in [half the floor, ceiling] rather than exactly `ceiling`. Without jitter every
+    // client that lost the same backend wakes on the same tick, so a restart produces synchronized
+    // reconnect waves at 1s, 2s, 4s... — the recovery becomes its own load spike, which is exactly
+    // when the origin can least afford one.
+    const jittered = (ceiling: number) =>
+      Math.round(RECONNECT_MIN_MS / 2 + Math.random() * ceiling);
 
     const connect = () => {
       if (closed) return;
@@ -40,8 +60,14 @@ export function useChainSocket() {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        reconnectDelay = RECONNECT_MIN_MS;
         pollDelay = POLL_MIN_MS;
+        // Deliberately NOT resetting reconnectDelay here — see STABLE_AFTER_MS. Only a connection
+        // that survives counts as success; one that is accepted and dropped must keep backing off.
+        clearStable();
+        stableTimer = setTimeout(() => {
+          reconnectDelay = RECONNECT_MIN_MS;
+          stableTimer = null;
+        }, STABLE_AFTER_MS);
       };
 
       ws.onmessage = (ev) => {
@@ -61,6 +87,7 @@ export function useChainSocket() {
       };
       ws.onclose = () => {
         if (wsRef.current === ws) wsRef.current = null;
+        clearStable();
         scheduleReconnect();
       };
       ws.onerror = () => {
@@ -74,7 +101,7 @@ export function useChainSocket() {
 
     const scheduleReconnect = () => {
       if (closed || reconnectRef.current) return;
-      const delay = reconnectDelay;
+      const delay = jittered(reconnectDelay);
       reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
       reconnectRef.current = setTimeout(() => {
         reconnectRef.current = null;
@@ -94,7 +121,10 @@ export function useChainSocket() {
         void refreshState();
         pollDelay = Math.min(Math.round(pollDelay * 1.5), POLL_MAX_MS);
       }
-      pollTimer = setTimeout(tick, pollDelay);
+      // Spread the fallback poll too (±25%): while the socket is down this is the ONLY traffic
+      // every client generates, so an unjittered interval marches them all in lockstep against an
+      // origin that is, by definition, already unhealthy.
+      pollTimer = setTimeout(tick, Math.round(pollDelay * (0.75 + Math.random() * 0.5)));
     };
     pollTimer = setTimeout(tick, pollDelay);
 
@@ -102,6 +132,7 @@ export function useChainSocket() {
       closed = true;
       if (pollTimer) clearTimeout(pollTimer);
       if (reconnectRef.current) clearTimeout(reconnectRef.current);
+      clearStable();
       if (wsRef.current) {
         try {
           wsRef.current.close();

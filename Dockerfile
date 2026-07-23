@@ -32,6 +32,13 @@ COPY --from=frontend /fe/dist /app/static
 #   docker run --rm -v <volume>:/data alpine chown -R 10001:10001 /data
 RUN mkdir -p /data && chown forkwars:forkwars /data
 ENV STATIC_DIR=/app/static
+# Build provenance. Pass --build-arg GIT_SHA=$(git rev-parse --short HEAD) (the compose files and
+# deploy script do). Surfaces two ways: as an OCI label on the image, and at /health/live from the
+# running container — so a deploy can be tied to a commit instead of guessed from image timestamps.
+# Defaults to "unknown", which is the signal that the build path forgot to pass it.
+ARG GIT_SHA=unknown
+ENV FW_GIT_SHA=$GIT_SHA
+LABEL org.opencontainers.image.revision=$GIT_SHA
 EXPOSE 8080
 # Readiness, not liveness: a container whose ingest has stalled serves stale data and should be
 # reported unhealthy even though the process is fine.

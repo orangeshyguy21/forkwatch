@@ -11,7 +11,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query, State,
     },
-    http::{header, StatusCode},
+    http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Json, Response},
     routing::get,
     Router,
@@ -22,7 +22,11 @@ use parking_lot::RwLock;
 use serde_json::{json, Value};
 use std::{collections::HashMap, env, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
-use tower_http::{compression::CompressionLayer, services::ServeDir, trace::TraceLayer};
+use tower::{limit::ConcurrencyLimitLayer, ServiceBuilder};
+use tower_http::{
+    compression::CompressionLayer, services::ServeDir, set_header::SetResponseHeaderLayer,
+    timeout::TimeoutLayer, trace::TraceLayer,
+};
 use tracing::info;
 
 /// Cache-Control for immutable resources. Every block below the tip is frozen forever and every
@@ -46,6 +50,34 @@ const FINAL_DEPTH: i64 = 100;
 /// lever for an unauthenticated endpoint. Excess upgrade attempts get a 503 and the client's poll
 /// fallback keeps them served.
 const WS_MAX_CONNS_DEFAULT: usize = 5000;
+/// The SPA entry document must be revalidated on every load. It names the content-hashed asset
+/// bundles, so a heuristically-cached copy pointing at hashes that a deploy has since replaced
+/// renders a blank page — the classic post-deploy white screen, and one that persists for as long
+/// as the browser keeps guessing a freshness lifetime for a document that never sent one.
+const CC_HTML: &str = "no-cache";
+/// Default request timeout (override with REQUEST_TIMEOUT_SECS). Without one, a wedged handler
+/// holds its connection forever and slow requests accumulate until the process runs out of sockets.
+const REQUEST_TIMEOUT_SECS_DEFAULT: u64 = 20;
+/// Default ceiling on concurrently in-flight HTTP requests (override with MAX_INFLIGHT_REQUESTS).
+/// A spike then costs latency (and, past the timeout, shed load) instead of unbounded memory.
+const MAX_INFLIGHT_DEFAULT: usize = 512;
+
+/// Content-Security-Policy for the SPA.
+///
+/// `style-src` needs 'unsafe-inline' because the isometric layout positions blocks with inline
+/// style attributes; scripts get no such exemption, which is where it matters — coinbase text is
+/// attacker-influenced data rendered into this page. `connect-src` names ws/wss so the push socket
+/// is not blocked, and `frame-ancestors 'none'` stops the dashboard being framed for clickjacking.
+const CSP: &str = "default-src 'self'; \
+script-src 'self'; \
+style-src 'self' 'unsafe-inline'; \
+img-src 'self' data:; \
+font-src 'self' data:; \
+connect-src 'self' ws: wss:; \
+base-uri 'self'; \
+form-action 'none'; \
+frame-ancestors 'none'; \
+object-src 'none'";
 
 #[derive(Clone)]
 struct Ctx {
@@ -116,6 +148,12 @@ async fn main() {
     );
     let ws_max_conns: usize = env::var("WS_MAX_CONNS")
         .ok().and_then(|s| s.parse().ok()).filter(|v| *v > 0).unwrap_or(WS_MAX_CONNS_DEFAULT);
+    let request_timeout = Duration::from_secs(
+        env::var("REQUEST_TIMEOUT_SECS")
+            .ok().and_then(|s| s.parse().ok()).filter(|v| *v > 0).unwrap_or(REQUEST_TIMEOUT_SECS_DEFAULT),
+    );
+    let max_inflight: usize = env::var("MAX_INFLIGHT_REQUESTS")
+        .ok().and_then(|s| s.parse().ok()).filter(|v| *v > 0).unwrap_or(MAX_INFLIGHT_DEFAULT);
 
     let state = Arc::new(RwLock::new(AppState::default()));
 
@@ -153,7 +191,13 @@ async fn main() {
         ready_max_stale,
         ws_conns: Arc::new(Semaphore::new(ws_max_conns)),
     };
-    let app = Router::new()
+    // /ws is deliberately kept OUT of the timeout and concurrency layers below. A WebSocket is a
+    // long-lived connection by design: a request timeout would sever every socket at the deadline,
+    // and a concurrency permit held for the life of a socket would exhaust the limit with a handful
+    // of viewers. Socket count is bounded separately, by WS_MAX_CONNS inside ws_handler.
+    let ws_routes = Router::new().route("/ws", get(ws_handler));
+
+    let request_routes = Router::new()
         // Liveness answers "is the process running"; readiness answers "should this replica receive
         // traffic". Conflating them (a constant `{"ok":true}`) makes every health check decorative:
         // it stays green through a dead ingest, empty state, and both nodes offline.
@@ -164,9 +208,58 @@ async fn main() {
         .route("/api/blocks", get(get_blocks))
         .route("/api/blocks/range", get(get_blocks_range))
         .route("/api/blocks/:hash/violations", get(get_violations))
-        .route("/ws", get(ws_handler))
+        // Bound time and in-flight work. Cloudflare rate-limiting is the first line of defence, but
+        // it is bypassable by cache-busting query strings (?before=<random>), which reach the origin
+        // unthrottled — so the origin needs its own ceiling rather than trusting the edge.
+        .layer(TimeoutLayer::new(request_timeout))
+        .layer(ConcurrencyLimitLayer::new(max_inflight));
+
+    // Content-hashed by vite (index-BqKSeg4b.js), so the bytes at any /assets URL never change:
+    // freezing them is what makes the no-cache on index.html cheap.
+    let assets_service = ServiceBuilder::new()
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(CC_IMMUTABLE),
+        ))
+        .service(ServeDir::new(format!("{static_dir}/assets")));
+
+    let spa_service = ServiceBuilder::new()
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(CC_HTML),
+        ))
+        .service(ServeDir::new(&static_dir).append_index_html_on_directories(true));
+
+    let app = ws_routes
+        .merge(request_routes)
         .with_state(ctx)
-        .fallback_service(ServeDir::new(static_dir).append_index_html_on_directories(true))
+        .nest_service("/assets", assets_service)
+        .fallback_service(spa_service)
+        // Security headers on every response, static included. `overriding` so a handler cannot
+        // accidentally weaken them.
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(CSP),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("strict-origin-when-cross-origin"),
+        ))
+        // Ignored by browsers over plain HTTP (so the LAN nginx path is unaffected) and honoured
+        // once Cloudflare terminates TLS. No includeSubDomains: this host should not dictate policy
+        // for siblings it does not control.
+        .layer(SetResponseHeaderLayer::overriding(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static("max-age=31536000"),
+        ))
         // Block JSON is highly repetitive and compresses ~8x. Applied outside the routes so it
         // covers the static SPA too.
         .layer(CompressionLayer::new())
@@ -210,7 +303,19 @@ async fn shutdown_signal() {
 }
 
 async fn health_live() -> impl IntoResponse {
-    ([(header::CACHE_CONTROL, CC_NONE)], Json(json!({ "ok": true, "check": "live" })))
+    // Build provenance is part of liveness on purpose: without it, "is the fix actually deployed?"
+    // can only be inferred from image timestamps, which is how a stale binary survives a review.
+    // Stamped at image build time (Dockerfile ARG GIT_SHA -> ENV FW_GIT_SHA); "unknown" when the
+    // build arg was not passed, which is itself the signal that the deploy path skipped it.
+    (
+        [(header::CACHE_CONTROL, CC_NONE)],
+        Json(json!({
+            "ok": true,
+            "check": "live",
+            "version": env!("CARGO_PKG_VERSION"),
+            "commit": env::var("FW_GIT_SHA").unwrap_or_else(|_| "unknown".to_string()),
+        })),
+    )
 }
 
 /// Ready = the replica has chain data to serve AND the ingest loop completed a pass recently. A

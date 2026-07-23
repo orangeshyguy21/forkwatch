@@ -19,12 +19,36 @@
 #
 name: forkwatch-prod
 
+# --- Resource guards ------------------------------------------------------------------------------
+# Two failure modes this box would otherwise hit on its own, with no attacker involved:
+#
+#   1. Disk fill. Docker's json-file driver is UNBOUNDED by default, and two bitcoind nodes logging
+#      a multi-day IBD will happily eat the root volume. Every service below gets *logging.
+#   2. OOM. Two nodes doing concurrent IBD (plus loadtxoutset, which is memory-hungry) can push the
+#      kernel into killing whatever it likes — including the app or cloudflared, mid-launch. The
+#      mem_limit values below bound each service so a spike kills the offender, not a bystander.
+#
+# SIZING: these defaults are shaped for a ~16 GB box (nodes 5g each + app 768m + edge/tor 256m each
+# leaves ~5 GB for the OS and page cache). The production instance is not provisioned yet, so
+# RE-CHECK THESE BEFORE FIRST DEPLOY and override in compose/.env:
+#   8 GB box  -> FW_NODE_MEM_LIMIT=2500m, and set dbcache=300 in nodes/*/mainnet.conf
+#   32 GB box -> FW_NODE_MEM_LIMIT=8g,    and dbcache=1000 for a faster IBD
+# A limit set BELOW what bitcoind actually needs turns a slow sync into an OOM-kill loop, so err
+# high; the point is a blast-radius guard, not tight packing.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 services:
   tor:
     build:
       context: ../tor
     container_name: fw-tor-prod
     restart: unless-stopped
+    mem_limit: ${FW_TOR_MEM_LIMIT:-256m}
+    logging: *logging
     networks: [fwnet]
 
   core:
@@ -32,6 +56,8 @@ services:
       context: ../nodes/core
     container_name: fw-core-prod
     restart: unless-stopped
+    mem_limit: ${FW_NODE_MEM_LIMIT:-5g}
+    logging: *logging
     depends_on: [tor]
     environment:
       - RPC_USER=${FW_RPC_USER:-forkwars}
@@ -43,7 +69,10 @@ services:
       - ../nodes/core/mainnet.conf:/data/bitcoin.conf:ro
       - ../snapshots:/snapshots:ro
     healthcheck:
-      test: ["CMD-SHELL", "bitcoin-cli -datadir=/data -rpcuser=\"$$RPC_USER\" -rpcpassword=\"$$RPC_PASS\" -rpcwait getblockchaininfo"]
+      # No credentials on the command line: bitcoind writes a .cookie (entrypoint configures rpcauth
+      # instead of -rpcpassword), and bitcoin-cli reads it from the datadir. This healthcheck runs
+      # every 15s, so passing the password here would keep it permanently visible in host `ps aux`.
+      test: ["CMD-SHELL", "bitcoin-cli -datadir=/data -rpcwait getblockchaininfo"]
       interval: 15s
       timeout: 10s
       retries: 60
@@ -54,6 +83,8 @@ services:
       context: ../nodes/knots
     container_name: fw-knots-prod
     restart: unless-stopped
+    mem_limit: ${FW_NODE_MEM_LIMIT:-5g}
+    logging: *logging
     depends_on: [tor]
     environment:
       - RPC_USER=${FW_RPC_USER:-forkwars}
@@ -65,7 +96,10 @@ services:
       - ../nodes/knots/mainnet.conf:/data/bitcoin.conf:ro
       - ../snapshots:/snapshots:ro
     healthcheck:
-      test: ["CMD-SHELL", "bitcoin-cli -datadir=/data -rpcuser=\"$$RPC_USER\" -rpcpassword=\"$$RPC_PASS\" -rpcwait getblockchaininfo"]
+      # No credentials on the command line: bitcoind writes a .cookie (entrypoint configures rpcauth
+      # instead of -rpcpassword), and bitcoin-cli reads it from the datadir. This healthcheck runs
+      # every 15s, so passing the password here would keep it permanently visible in host `ps aux`.
+      test: ["CMD-SHELL", "bitcoin-cli -datadir=/data -rpcwait getblockchaininfo"]
       interval: 15s
       timeout: 10s
       retries: 60
@@ -75,8 +109,12 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
     container_name: fw-app-prod
     restart: unless-stopped
+    mem_limit: ${FW_APP_MEM_LIMIT:-768m}
+    logging: *logging
     depends_on: [core, knots]
     # All values come from compose/.env (see compose/.env.prod.example). Defaults reproduce the
     # production config; FW_RPC_PASS is the one required value.
@@ -92,6 +130,10 @@ services:
       # (the node has pruned those blocks — the SQLite cache is the only copy).
       - DB_PATH=${FW_DB_PATH:-/data/forkwars.db}
       - READY_MAX_STALE_SECS=${FW_READY_MAX_STALE_SECS:-60}
+      # Ceiling on concurrent WebSocket connections. Over-cap upgrades are refused with 503 and the
+      # client falls back to polling (which the edge cache absorbs) — bounding memory under a
+      # connection flood instead of accepting unbounded sockets.
+      - WS_MAX_CONNS=${FW_WS_MAX_CONNS:-5000}
       - RUST_LOG=${FW_RUST_LOG:-forkwars_backend=info,tower_http=warn,axum::rejection=warn}
       - FLOOR_HEIGHT=${FW_FLOOR_HEIGHT:-927360}
       - FORK_AT_HEIGHT=${FW_FORK_AT_HEIGHT:-961632}
@@ -112,9 +154,16 @@ services:
   # (Networks -> Tunnels); set the public hostname there to point at http://app:8080.
   # Prefer in-repo ingress rules instead of the dashboard? See compose/cloudflared/config.example.yml.
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    # Pinned by DIGEST, not just tag. This is the only internet-facing component in the stack, and
+    # `:latest` silently changes it on every redeploy — the node images are pinned + SHA-verified for
+    # exactly this reason. The tag is kept alongside the digest purely as human-readable provenance;
+    # the digest is what docker enforces. To bump: docker pull the new tag, read back
+    # `docker inspect <img> -f '{{index .RepoDigests 0}}'`, and update both halves together.
+    image: cloudflare/cloudflared:2026.7.3@sha256:e39ee8da81ad5e05d77f38d2f51c60ca51bf2a8450ac3abab50c17fdb91d91bf
     container_name: fw-cloudflared-prod
     restart: unless-stopped
+    mem_limit: ${FW_CLOUDFLARED_MEM_LIMIT:-256m}
+    logging: *logging
     depends_on: [app]
     command: ["tunnel", "--no-autoupdate", "run"]
     environment:

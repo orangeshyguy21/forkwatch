@@ -10,7 +10,13 @@ path = "src/main.rs"
 [dependencies]
 axum = { version = "0.7", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.5", features = ["fs", "cors", "compression-gzip", "compression-br", "trace"] }
+# `limit` provides ConcurrencyLimitLayer: a backstop on in-flight requests so a traffic spike costs
+# latency rather than memory. Paired with the request timeout, over-limit work is shed, not queued
+# indefinitely.
+tower = { version = "0.4", features = ["limit"] }
+tower-http = { version = "0.5", features = [
+    "fs", "cors", "compression-gzip", "compression-br", "trace", "set-header", "timeout",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "2", features = ["json"] }

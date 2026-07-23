@@ -36,12 +36,33 @@ if [ ! -f "$ENV_FILE" ]; then
   exit 1
 fi
 
-# Load the env so we can sanity-check the required secrets before invoking compose.
-set -a; # shellcheck disable=SC1090
-source "$ENV_FILE"; set +a
+# Read the handful of values we sanity-check WITHOUT sourcing the file. `source` executes it as
+# shell, so an unquoted value containing a space — e.g. the shipped `FW_FORK_LABEL=Mandatory
+# signaling` — aborts the deploy with "command not found", and any other content would run as code.
+# Docker compose parses .env with its own non-shell rules and reads it directly, so such values are
+# perfectly legal there; only this script needed to stop pretending the file is a shell script.
+# The trailing `|| true` matters: under `set -euo pipefail` a key that is simply ABSENT makes grep
+# exit non-zero, which would abort the whole script with no message instead of letting the explicit
+# "is it empty?" checks below report which variable is missing.
+envget() {
+  grep -E "^[[:space:]]*${1}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- \
+    | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/" || true
+}
+FW_RPC_PASS=$(envget FW_RPC_PASS)
+FW_CF_TUNNEL_TOKEN=$(envget FW_CF_TUNNEL_TOKEN)
 
 [ "${FW_RPC_PASS:-}" = "change_me_before_deploying" ] && die "FW_RPC_PASS is still the placeholder in $ENV_FILE."
 [ -z "${FW_RPC_PASS:-}" ] && die "FW_RPC_PASS is empty in $ENV_FILE."
+
+# These values are committed in this repo's git history (commits 6775948, 93efdbd). History is
+# public once pushed and cannot be un-published, so they are permanently burned — refuse to carry
+# one into a public deployment even though the rpcauth change keeps it out of `ps`.
+case "${FW_RPC_PASS:-}" in
+  forkwars_mainnet|forkwars_regtest)
+    die "FW_RPC_PASS is '${FW_RPC_PASS}', which is committed in this repo's git history and must
+       never be used in production. Generate a fresh secret and set it in $ENV_FILE:
+           openssl rand -base64 32" ;;
+esac
 [ "${FW_CF_TUNNEL_TOKEN:-}" = "paste_your_cloudflare_tunnel_token_here" ] && die "FW_CF_TUNNEL_TOKEN is still the placeholder in $ENV_FILE."
 [ -z "${FW_CF_TUNNEL_TOKEN:-}" ] && die "FW_CF_TUNNEL_TOKEN is empty in $ENV_FILE."
 
@@ -50,12 +71,56 @@ if [ ! -f "$SNAPSHOT" ]; then
        trusted node, or copy it in, before first start. See $ENV_EXAMPLE."
 fi
 
+# --- Disk preflight ------------------------------------------------------------------------------
+# prune=150000 is ~146 GiB of blocks PER NODE (~293 GiB for the pair), plus two chainstates, the
+# ~11 GiB snapshot, the app's SQLite history and rotated logs. Running out mid-IBD — days in, with
+# no warning — corrupts chainstate and costs a full resync, so fail here instead.
+DOCKER_ROOT=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
+REQUIRED_GB=${FW_MIN_DISK_GB:-500}
+AVAIL_GB=$(df -PBG "$DOCKER_ROOT" 2>/dev/null | awk 'NR==2 {gsub(/G/,"",$4); print $4}')
+if [ -z "${AVAIL_GB:-}" ]; then
+  red "WARNING: could not determine free space on $DOCKER_ROOT; ensure >= ${REQUIRED_GB} GB is available."
+elif [ "$AVAIL_GB" -lt "$REQUIRED_GB" ]; then
+  die "Only ${AVAIL_GB} GB free on $DOCKER_ROOT, but >= ${REQUIRED_GB} GB is needed (two pruned
+       nodes at ~146 GiB each, plus chainstate, the snapshot, and the app DB). Attach a larger
+       volume, or override the floor with FW_MIN_DISK_GB if you know better."
+else
+  green "Disk: ${AVAIL_GB} GB free on $DOCKER_ROOT (need >= ${REQUIRED_GB} GB)"
+fi
+
 # --- Build + up ----------------------------------------------------------------------------------
-bold "Building images (frontend + Rust backend + node images)..."
+# Stamp the image with the commit being deployed (Dockerfile ARG GIT_SHA). A dirty tree is marked as
+# such, because the resulting image then corresponds to no commit at all.
+GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+git diff --quiet HEAD 2>/dev/null || GIT_SHA="${GIT_SHA}-dirty"
+export GIT_SHA
+
+bold "Building images (frontend + Rust backend + node images)... [commit $GIT_SHA]"
 docker compose -f "$COMPOSE_FILE" build
 
 bold "Starting the production stack..."
 docker compose -f "$COMPOSE_FILE" up -d
+
+# --- Verify what is actually running -------------------------------------------------------------
+# The failure this catches: the build silently reuses a stale image (or the app never restarts), so
+# the code you just reviewed and fixed is not the code serving traffic. Compare the commit reported
+# by the LIVE container against the one we just built, rather than trusting image timestamps.
+bold "Verifying the running container reports commit $GIT_SHA..."
+running=""
+for _ in $(seq 1 30); do
+  running=$(docker exec fw-app-prod curl -fsS http://127.0.0.1:8080/health/live 2>/dev/null \
+            | sed -n 's/.*"commit":"\([^"]*\)".*/\1/p') || true
+  [ -n "$running" ] && break
+  sleep 2
+done
+if [ -z "$running" ]; then
+  red "WARNING: could not read /health/live from fw-app-prod; verify the deploy manually."
+elif [ "$running" != "$GIT_SHA" ]; then
+  die "Deployed binary reports commit '$running' but '$GIT_SHA' was built. The app is running STALE
+       code. Re-run with: docker compose -f $COMPOSE_FILE build --no-cache app && docker compose -f $COMPOSE_FILE up -d app"
+else
+  green "Verified: fw-app-prod is running commit $running"
+fi
 
 echo
 green "Stack is up. Current status:"

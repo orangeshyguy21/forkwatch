@@ -16,6 +16,12 @@ COMPOSE_FILE="$HERE/compose/docker-compose.regtest.yml"
 PARAMS="$HERE/compose/regtest.env"
 RUNTIME="$HERE/compose/.regtest.runtime.env"
 
+# Build provenance for the app image (Dockerfile ARG GIT_SHA -> /health/live .commit), so a regtest
+# container can be tied to a commit the same way prod is. Dirty trees are marked.
+GIT_SHA="$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+git -C "$HERE" diff --quiet HEAD 2>/dev/null || GIT_SHA="${GIT_SHA}-dirty"
+export GIT_SHA
+
 dc() { docker compose --env-file "$PARAMS" --env-file "$RUNTIME" -f "$COMPOSE_FILE" "$@"; }
 C()  { docker exec fw-core  bitcoin-cli -datadir=/data "$@"; }
 K()  { docker exec fw-knots bitcoin-cli -datadir=/data "$@"; }

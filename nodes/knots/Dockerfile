@@ -12,7 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
  && rm -rf "${TARBALL}" "bitcoin-${VERSION}"
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends libstdc++6 \
+# openssl is used by the entrypoint to derive the rpcauth salted hash, so the RPC password never
+# reaches a command line (where host `ps aux` would expose it).
+RUN apt-get update && apt-get install -y --no-install-recommends libstdc++6 openssl \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd -g 1000 bitcoin && useradd -u 1000 -g 1000 -m -d /data bitcoin
 COPY --from=fetch /usr/local/bin/bitcoind    /usr/local/bin/bitcoind
