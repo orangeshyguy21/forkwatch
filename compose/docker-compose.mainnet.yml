@@ -21,14 +21,18 @@ services:
     restart: unless-stopped
     depends_on: [tor]
     environment:
-      - LOAD_SNAPSHOT=/snapshots/utxo-840000.dat
-      - SNAPSHOT_HEIGHT=840000
+      # RPC auth: the node entrypoint injects these into bitcoind so nothing is baked into the conf.
+      - RPC_USER=${FW_RPC_USER:-forkwars}
+      - RPC_PASS=${FW_RPC_PASS:?set FW_RPC_PASS in compose/.env (see compose/.env.example)}
+      - LOAD_SNAPSHOT=${FW_LOAD_SNAPSHOT:-/snapshots/utxo-840000.dat}
+      - SNAPSHOT_HEIGHT=${FW_SNAPSHOT_HEIGHT:-840000}
     volumes:
       - core-data:/data
       - ../nodes/core/mainnet.conf:/data/bitcoin.conf:ro
       - ../snapshots:/snapshots:ro
     healthcheck:
-      test: ["CMD", "bitcoin-cli", "-datadir=/data", "-rpcwait", "getblockchaininfo"]
+      # CMD-SHELL so the credentials expand from the container env ($$ escapes compose interpolation).
+      test: ["CMD-SHELL", "bitcoin-cli -datadir=/data -rpcuser=\"$$RPC_USER\" -rpcpassword=\"$$RPC_PASS\" -rpcwait getblockchaininfo"]
       interval: 15s
       timeout: 10s
       retries: 60
@@ -41,14 +45,16 @@ services:
     restart: unless-stopped
     depends_on: [tor]
     environment:
-      - LOAD_SNAPSHOT=/snapshots/utxo-840000.dat
-      - SNAPSHOT_HEIGHT=840000
+      - RPC_USER=${FW_RPC_USER:-forkwars}
+      - RPC_PASS=${FW_RPC_PASS:?set FW_RPC_PASS in compose/.env (see compose/.env.example)}
+      - LOAD_SNAPSHOT=${FW_LOAD_SNAPSHOT:-/snapshots/utxo-840000.dat}
+      - SNAPSHOT_HEIGHT=${FW_SNAPSHOT_HEIGHT:-840000}
     volumes:
       - knots-data:/data
       - ../nodes/knots/mainnet.conf:/data/bitcoin.conf:ro
       - ../snapshots:/snapshots:ro
     healthcheck:
-      test: ["CMD", "bitcoin-cli", "-datadir=/data", "-rpcwait", "getblockchaininfo"]
+      test: ["CMD-SHELL", "bitcoin-cli -datadir=/data -rpcuser=\"$$RPC_USER\" -rpcpassword=\"$$RPC_PASS\" -rpcwait getblockchaininfo"]
       interval: 15s
       timeout: 10s
       retries: 60
@@ -61,29 +67,33 @@ services:
     container_name: fw-app-main
     restart: unless-stopped
     depends_on: [core, knots]
+    # All values come from compose/.env (see compose/.env.example); the defaults below reproduce the
+    # production deployment so a bare invocation still works — except FW_RPC_PASS, which is required.
     environment:
-      - CORE_RPC_URL=http://core:8332
-      - KNOTS_RPC_URL=http://knots:8332
-      - RPC_USER=forkwars
-      - RPC_PASS=forkwars_mainnet
-      - POLL_MS=5000
+      - CORE_RPC_URL=${FW_CORE_RPC_URL:-http://core:8332}
+      - KNOTS_RPC_URL=${FW_KNOTS_RPC_URL:-http://knots:8332}
+      - RPC_USER=${FW_RPC_USER:-forkwars}
+      - RPC_PASS=${FW_RPC_PASS:?set FW_RPC_PASS in compose/.env (see compose/.env.example)}
+      - POLL_MS=${FW_POLL_MS:-5000}
       - BIND=0.0.0.0:8080
-      - NETWORK=mainnet
+      - NETWORK=${FW_NETWORK:-mainnet}
       # DB filename kept as forkwars.db on purpose: renaming it would orphan the cached history
       # (the node has pruned those blocks — the SQLite cache is the only copy).
-      - DB_PATH=/data/forkwars.db
+      - DB_PATH=${FW_DB_PATH:-/data/forkwars.db}
+      - READY_MAX_STALE_SECS=${FW_READY_MAX_STALE_SECS:-60}
+      - RUST_LOG=${FW_RUST_LOG:-forkwars_backend=info,tower_http=warn,axum::rejection=warn}
       # First epoch (2016-block boundary) where BIP-110/RDTS bit-4 signaling was possible.
-      - FLOOR_HEIGHT=927360
+      - FLOOR_HEIGHT=${FW_FLOOR_HEIGHT:-927360}
       # Countdown target: start of BIP-110's MANDATORY SIGNALING window (blocks 961,632–963,647).
       # From this height BIP-110 nodes reject blocks that do not signal bit 4 — the point at which
       # the chain can actually split. Later milestones (lock-in 963,648, active 965,664) are not
       # tracked yet; see PLAN.md §10.
-      - FORK_AT_HEIGHT=961632
-      - FORK_LABEL=Mandatory signaling
+      - FORK_AT_HEIGHT=${FW_FORK_AT_HEIGHT:-961632}
+      - FORK_LABEL=${FW_FORK_LABEL:-Mandatory signaling}
       # Difficulty geometry. Past the next retarget the ETA reverts to the 600s protocol target
       # rather than extrapolating today's measured rate, which retargeting will erase anyway.
-      - TARGET_SPACING_SECS=600
-      - RETARGET_INTERVAL=2016
+      - TARGET_SPACING_SECS=${FW_TARGET_SPACING_SECS:-600}
+      - RETARGET_INTERVAL=${FW_RETARGET_INTERVAL:-2016}
     # The image runs as uid 10001, not root. The app-db volume predates that change and is
     # root-owned, so it must be chowned ONCE before the first start on the new image or the app
     # cannot write the cached history (which the node has pruned and cannot re-supply):
@@ -91,7 +101,7 @@ services:
     volumes:
       - app-db:/data
     ports:
-      - "8081:8080"   # kept for local debugging; LAN users go through nginx on :80
+      - "${FW_APP_PORT:-8081}:8080"   # kept for local debugging; LAN users go through nginx on :80
     networks: [fwnet]
 
   # LAN reverse proxy: http://forkwatch.local (port 80) -> app:8080 on the internal network.
@@ -121,7 +131,7 @@ services:
     security_opt:
       - apparmor=unconfined
     environment:
-      - MDNS_NAME=forkwatch.local
+      - MDNS_NAME=${FW_MDNS_NAME:-forkwatch.local}
     volumes:
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
 

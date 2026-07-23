@@ -12,6 +12,10 @@ services:
       context: ../nodes/core
     container_name: fw-core
     restart: unless-stopped
+    environment:
+      # RPC auth: injected into bitcoind by the node entrypoint (no credential baked into the conf).
+      - RPC_USER=${FW_RPC_USER:-forkwars}
+      - RPC_PASS=${FW_RPC_PASS:-forkwars_regtest}
     volumes:
       - core-data:/data
       - ../nodes/core/regtest.conf:/data/bitcoin.conf:ro
@@ -19,7 +23,7 @@ services:
     ports:
       - "18443:18443"   # Core RPC exposed to host for debugging/e2e driver
     healthcheck:
-      test: ["CMD", "bitcoin-cli", "-datadir=/data", "-rpcwait", "getblockchaininfo"]
+      test: ["CMD-SHELL", "bitcoin-cli -datadir=/data -rpcuser=\"$$RPC_USER\" -rpcpassword=\"$$RPC_PASS\" -rpcwait getblockchaininfo"]
       interval: 5s
       timeout: 10s
       retries: 20
@@ -29,6 +33,9 @@ services:
       context: ../nodes/knots
     container_name: fw-knots
     restart: unless-stopped
+    environment:
+      - RPC_USER=${FW_RPC_USER:-forkwars}
+      - RPC_PASS=${FW_RPC_PASS:-forkwars_regtest}
     volumes:
       - knots-data:/data
       - ../nodes/knots/regtest.conf:/data/bitcoin.conf:ro
@@ -36,7 +43,7 @@ services:
     ports:
       - "18453:18443"   # Knots RPC exposed to host (remapped to avoid clashing with Core)
     healthcheck:
-      test: ["CMD", "bitcoin-cli", "-datadir=/data", "-rpcwait", "getblockchaininfo"]
+      test: ["CMD-SHELL", "bitcoin-cli -datadir=/data -rpcuser=\"$$RPC_USER\" -rpcpassword=\"$$RPC_PASS\" -rpcwait getblockchaininfo"]
       interval: 5s
       timeout: 10s
       retries: 20
@@ -51,8 +58,8 @@ services:
     environment:
       - CORE_RPC_URL=http://core:18443
       - KNOTS_RPC_URL=http://knots:18443
-      - RPC_USER=forkwars
-      - RPC_PASS=forkwars_regtest
+      - RPC_USER=${FW_RPC_USER:-forkwars}
+      - RPC_PASS=${FW_RPC_PASS:-forkwars_regtest}
       - POLL_MS=${POLL_MS:-2000}
       - BIND=0.0.0.0:8080
       - NETWORK=regtest
@@ -88,8 +95,8 @@ services:
     environment:
       - CORE_RPC_URL=http://core:18443
       - KNOTS_RPC_URL=http://knots:18443
-      - RPC_USER=forkwars
-      - RPC_PASS=forkwars_regtest
+      - RPC_USER=${FW_RPC_USER:-forkwars}
+      - RPC_PASS=${FW_RPC_PASS:-forkwars_regtest}
       - MINE_INTERVAL_SECS=${BLOCK_SPACING_SECS:-20}   # live cadence == the spacing the history was dated at
       - FORK_AT_HEIGHT=${FORK_AT_HEIGHT:-6048}   # preprogrammed fork height (must match the app service)
       - PRE_FORK_BLOCKS=${PRE_FORK_BLOCKS:-18}     # fallback pre-fork window if setup already passed FORK_AT_HEIGHT
