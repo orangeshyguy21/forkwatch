@@ -37,6 +37,20 @@ const Z_80 = 1.2815515655446004;
  */
 const POST_RETARGET_DRIFT = 0.05;
 
+/**
+ * Bounds on the per-block interval used for the blocks still mined under today's difficulty, as a
+ * fraction of the protocol target. Difficulty retargeting holds the *long-run* average within a few
+ * percent of the target, so a lucky or unlucky streak in the recency-weighted measured rate must not
+ * be extrapolated across a whole epoch — carried over ~2,000 blocks a 20% swing moves the countdown
+ * by days, which is exactly the twitch this clamp exists to kill. Inside the band the measured rate
+ * still steers the estimate; outside it we trust the protocol over a fleeting streak. Only applied
+ * when a pacing model supplies a real target (mainnet); regtest's metronome sits inside the band and
+ * is untouched. The floor sits just below target because hashrate growth makes real epochs run a
+ * touch fast.
+ */
+const MEASURED_INTERVAL_MIN_FRAC = 0.98;
+const MEASURED_INTERVAL_MAX_FRAC = 1.05;
+
 export interface RateEstimate {
   /** Recency-weighted mean seconds per block. */
   meanInterval: number;
@@ -234,12 +248,23 @@ export function estimateEta(
   const atTarget = blocks - measured;
   const target = pacing && pacing.targetSpacing > 0 ? pacing.targetSpacing : rate.meanInterval;
 
-  const mean = measured * rate.meanInterval + atTarget * target;
+  // Per-block interval for the measured segment. Where difficulty binds it is clamped to a tight band
+  // around the protocol target (see MEASURED_INTERVAL_*_FRAC); with no such target the raw measured
+  // rate stands, which is correct on regtest where difficulty never pulls it back.
+  const measuredInterval =
+    pacing && pacing.targetSpacing > 0
+      ? Math.min(
+          target * MEASURED_INTERVAL_MAX_FRAC,
+          Math.max(target * MEASURED_INTERVAL_MIN_FRAC, rate.meanInterval),
+        )
+      : rate.meanInterval;
+
+  const mean = measured * measuredInterval + atTarget * target;
   if (!(mean > 0)) return null;
 
   const poissonVar = blocks * rate.sdInterval * rate.sdInterval;
   const rateSe = rate.nEff > 0 ? 1 / Math.sqrt(rate.nEff) : 0;
-  const rateVar = Math.pow(measured * rate.meanInterval * rateSe, 2);
+  const rateVar = Math.pow(measured * measuredInterval * rateSe, 2);
   const driftVar = Math.pow(atTarget * target * POST_RETARGET_DRIFT, 2);
   const sd = Math.sqrt(poissonVar + rateVar + driftVar);
 
