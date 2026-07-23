@@ -1,0 +1,135 @@
+# Forkwatch — PRODUCTION (public internet) stack.
+#
+# Same core as the mainnet stack — tor + two pruned, blocks-only nodes (Core + Knots) syncing the
+# real chain over Tor, feeding the Rust/axum app — but published to the internet through a
+# CLOUDFLARE TUNNEL instead of the LAN nginx + mDNS path.
+#
+# What changes vs docker-compose.mainnet.yml:
+#   - the `mdns` (LAN .local advertiser) and `nginx` (LAN reverse proxy) services are DROPPED;
+#   - the `app` publishes NO host port — nothing is exposed on the box's public interface;
+#   - a `cloudflared` service dials OUT to Cloudflare and routes your domain -> app:8080 (WS and
+#     all). No inbound security-group rule is needed; the origin IP stays hidden.
+#
+# Everything else (RPC/ZMQ/backend) stays on the internal fwnet, exactly as before. Config comes
+# from compose/.env (copy compose/.env.prod.example -> compose/.env). Volume names are pinned to the
+# original forkwars-mainnet_* so a box that already holds mainnet data reuses it with zero re-sync;
+# on a fresh box these are simply created empty.
+#
+#   docker compose -f compose/docker-compose.prod.yml up -d
+#
+name: forkwatch-prod
+
+services:
+  tor:
+    build:
+      context: ../tor
+    container_name: fw-tor-prod
+    restart: unless-stopped
+    networks: [fwnet]
+
+  core:
+    build:
+      context: ../nodes/core
+    container_name: fw-core-prod
+    restart: unless-stopped
+    depends_on: [tor]
+    environment:
+      - RPC_USER=${FW_RPC_USER:-forkwars}
+      - RPC_PASS=${FW_RPC_PASS:?set FW_RPC_PASS in compose/.env (see compose/.env.prod.example)}
+      - LOAD_SNAPSHOT=${FW_LOAD_SNAPSHOT:-/snapshots/utxo-840000.dat}
+      - SNAPSHOT_HEIGHT=${FW_SNAPSHOT_HEIGHT:-840000}
+    volumes:
+      - core-data:/data
+      - ../nodes/core/mainnet.conf:/data/bitcoin.conf:ro
+      - ../snapshots:/snapshots:ro
+    healthcheck:
+      test: ["CMD-SHELL", "bitcoin-cli -datadir=/data -rpcuser=\"$$RPC_USER\" -rpcpassword=\"$$RPC_PASS\" -rpcwait getblockchaininfo"]
+      interval: 15s
+      timeout: 10s
+      retries: 60
+    networks: [fwnet]
+
+  knots:
+    build:
+      context: ../nodes/knots
+    container_name: fw-knots-prod
+    restart: unless-stopped
+    depends_on: [tor]
+    environment:
+      - RPC_USER=${FW_RPC_USER:-forkwars}
+      - RPC_PASS=${FW_RPC_PASS:?set FW_RPC_PASS in compose/.env (see compose/.env.prod.example)}
+      - LOAD_SNAPSHOT=${FW_LOAD_SNAPSHOT:-/snapshots/utxo-840000.dat}
+      - SNAPSHOT_HEIGHT=${FW_SNAPSHOT_HEIGHT:-840000}
+    volumes:
+      - knots-data:/data
+      - ../nodes/knots/mainnet.conf:/data/bitcoin.conf:ro
+      - ../snapshots:/snapshots:ro
+    healthcheck:
+      test: ["CMD-SHELL", "bitcoin-cli -datadir=/data -rpcuser=\"$$RPC_USER\" -rpcpassword=\"$$RPC_PASS\" -rpcwait getblockchaininfo"]
+      interval: 15s
+      timeout: 10s
+      retries: 60
+    networks: [fwnet]
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: fw-app-prod
+    restart: unless-stopped
+    depends_on: [core, knots]
+    # All values come from compose/.env (see compose/.env.prod.example). Defaults reproduce the
+    # production config; FW_RPC_PASS is the one required value.
+    environment:
+      - CORE_RPC_URL=${FW_CORE_RPC_URL:-http://core:8332}
+      - KNOTS_RPC_URL=${FW_KNOTS_RPC_URL:-http://knots:8332}
+      - RPC_USER=${FW_RPC_USER:-forkwars}
+      - RPC_PASS=${FW_RPC_PASS:?set FW_RPC_PASS in compose/.env (see compose/.env.prod.example)}
+      - POLL_MS=${FW_POLL_MS:-5000}
+      - BIND=0.0.0.0:8080
+      - NETWORK=${FW_NETWORK:-mainnet}
+      # DB filename kept as forkwars.db on purpose: renaming it would orphan the cached history
+      # (the node has pruned those blocks — the SQLite cache is the only copy).
+      - DB_PATH=${FW_DB_PATH:-/data/forkwars.db}
+      - READY_MAX_STALE_SECS=${FW_READY_MAX_STALE_SECS:-60}
+      - RUST_LOG=${FW_RUST_LOG:-forkwars_backend=info,tower_http=warn,axum::rejection=warn}
+      - FLOOR_HEIGHT=${FW_FLOOR_HEIGHT:-927360}
+      - FORK_AT_HEIGHT=${FW_FORK_AT_HEIGHT:-961632}
+      - FORK_LABEL=${FW_FORK_LABEL:-Mandatory signaling}
+      - TARGET_SPACING_SECS=${FW_TARGET_SPACING_SECS:-600}
+      - RETARGET_INTERVAL=${FW_RETARGET_INTERVAL:-2016}
+    # No `ports:` — the app is NOT published on the host. Cloudflare reaches it over the internal
+    # fwnet as http://app:8080. (On a FRESH volume the image pre-owns /data for uid 10001, so no
+    # chown is needed; only a pre-existing root-owned app-db volume must be chowned once — see the
+    # mainnet compose for that one-liner.)
+    volumes:
+      - app-db:/data
+    networks: [fwnet]
+
+  # Cloudflare Tunnel: dials OUT to Cloudflare's edge and serves your domain from app:8080.
+  # No inbound ports, no public IP exposure, TLS terminated at the edge, WebSocket (/ws) upgraded
+  # transparently. The tunnel token carries the routing config created in the Zero Trust dashboard
+  # (Networks -> Tunnels); set the public hostname there to point at http://app:8080.
+  # Prefer in-repo ingress rules instead of the dashboard? See compose/cloudflared/config.example.yml.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: fw-cloudflared-prod
+    restart: unless-stopped
+    depends_on: [app]
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      - TUNNEL_TOKEN=${FW_CF_TUNNEL_TOKEN:?set FW_CF_TUNNEL_TOKEN in compose/.env (see compose/.env.prod.example)}
+    networks: [fwnet]
+
+networks:
+  fwnet:
+
+# Pinned to the original volume names so an existing mainnet box reuses node data + cached-history
+# DB as-is; on a fresh box they are created empty.
+volumes:
+  core-data:
+    name: forkwars-mainnet_core-data
+  knots-data:
+    name: forkwars-mainnet_knots-data
+  app-db:
+    name: forkwars-mainnet_app-db
