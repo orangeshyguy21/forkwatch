@@ -175,11 +175,6 @@ export function SignalStickerIcon({ size, className }: { size: number; className
   );
 }
 
-/** Human label for a rule's sticker (for tooltips / aria). */
-export function stickerLabel(rule: number): string | undefined {
-  return STICKERS[rule]?.label;
-}
-
 /** A single upright die-cut sticker — reused in the sidebar next to each violation. */
 export function StickerIcon({ rule, size, className }: { rule: number; size: number; className?: string }) {
   const def = STICKERS[rule];

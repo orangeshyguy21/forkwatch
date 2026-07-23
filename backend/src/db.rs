@@ -32,18 +32,23 @@ pub fn open(path: &str) -> Result<Connection> {
     Ok(conn)
 }
 
+/// Insert or replace one block.
+///
+/// `prepare_cached`, not `execute`: the backfill loop calls this up to BACKFILL_BATCH times per poll
+/// and `Connection::execute` recompiles the statement on every one of them. The cache is keyed on the
+/// SQL text, so all call sites share the single compiled statement for the process's lifetime.
 pub fn upsert(conn: &Connection, b: &Block) -> Result<()> {
     let rules = serde_json::to_string(&b.rdts_rule_hits).unwrap_or_else(|_| "[]".into());
     let vios = serde_json::to_string(&b.violations).unwrap_or_else(|_| "[]".into());
-    conn.execute(
+    let mut stmt = conn.prepare_cached(
         "INSERT OR REPLACE INTO block
          (hash,height,prev_hash,time,size,weight,tx_count,version,signals_110,rdts_verdict,rdts_rule_hits,violations,miner,coinbase_tag)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
-        params![
-            b.hash, b.height, b.prev_hash, b.time, b.size, b.weight, b.tx_count, b.version,
-            b.signals_110 as i64, b.rdts_verdict, rules, vios, b.miner, b.coinbase_tag
-        ],
     )?;
+    stmt.execute(params![
+        b.hash, b.height, b.prev_hash, b.time, b.size, b.weight, b.tx_count, b.version,
+        b.signals_110 as i64, b.rdts_verdict, rules, vios, b.miner, b.coinbase_tag
+    ])?;
     Ok(())
 }
 
@@ -76,9 +81,4 @@ pub fn load_all(conn: &Connection) -> Result<Vec<Block>> {
         out.push(b);
     }
     Ok(out)
-}
-
-pub fn clear(conn: &Connection) -> Result<()> {
-    conn.execute("DELETE FROM block", [])?;
-    Ok(())
 }

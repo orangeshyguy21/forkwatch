@@ -6,11 +6,16 @@ import { useEffect, useState } from 'react';
  *
  * The interval is re-aligned after every tick rather than free-running, so a tab that gets throttled
  * in the background resumes on time instead of drifting.
+ *
+ * A non-positive interval disables the ticker entirely. Callers pass 0 when nothing on screen is
+ * counting down, so a subtree that would re-render once a second to produce identical output simply
+ * stops.
  */
 export function useNow(intervalMs = 1000): number {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
+    if (intervalMs <= 0) return;
     let timer: ReturnType<typeof setTimeout>;
     const schedule = () => {
       const delay = intervalMs - (Date.now() % intervalMs);

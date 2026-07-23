@@ -1,0 +1,49 @@
+# Build context for the app image is the repo root (compose: `context: ..`), so without this
+# file every `docker build` streams ~9.5 GB to the daemon before a line compiles. The root
+# Dockerfile only ever reads frontend/ and backend/src + backend/Cargo.*; everything below is
+# either huge, regenerated inside the image, or irrelevant to it.
+#
+# Denylist rather than allowlist on purpose: a new top-level file the Dockerfile needs should
+# just work, and the entries here are the ones that actually carry weight.
+
+# Chain data and dumps — the 9.2 GB that dominates the context.
+snapshots/
+backups/
+*.dat
+*.tar.gz
+
+# Host-side build output. node_modules is reinstalled by `npm ci` and target by `cargo build`
+# inside their build stages; copying the host's would also poison the cache with foreign artifacts.
+**/node_modules/
+backend/target/
+frontend/dist/
+
+# Node data volumes, if a bind-mounted run ever leaves them in the tree.
+core-data/
+knots-data/
+tor-data/
+app-db/
+
+# Nothing in the build reads these.
+.git/
+.gitignore
+.dockerignore
+docs/
+e2e/
+scripts/
+compose/
+nodes/
+miner/
+mdns/
+tor/
+*.md
+LICENSE
+*.log
+.DS_Store
+.idea/
+.vscode/
+
+# Secrets must never reach a build layer, even unreferenced.
+.env
+**/.env
+**/*.env

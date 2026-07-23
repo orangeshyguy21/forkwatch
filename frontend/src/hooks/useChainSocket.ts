@@ -20,7 +20,6 @@ const STABLE_AFTER_MS = 15000;
 
 export function useChainSocket() {
   const refreshState = useStore((s) => s.refreshState);
-  const refreshTop = useStore((s) => s.refreshTop);
   const refreshRecent = useStore((s) => s.refreshRecent);
   const applyPush = useStore((s) => s.applyPush);
   const wsRef = useRef<WebSocket | null>(null);
@@ -81,7 +80,6 @@ export function useChainSocket() {
         // yet) or left a hole in the recent window — not on every push.
         if (!frame || applyPush(frame)) {
           void refreshState();
-          void refreshTop();
           void refreshRecent();
         }
       };
@@ -141,5 +139,5 @@ export function useChainSocket() {
         }
       }
     };
-  }, [refreshState, refreshTop, refreshRecent, applyPush]);
+  }, [refreshState, refreshRecent, applyPush]);
 }

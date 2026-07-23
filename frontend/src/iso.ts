@@ -77,14 +77,6 @@ export const ZOOM_LERP = 0.14;
 export const ZOOM_GAIN = 0.62;
 export const ZOOM_MAX = 4.2;
 
-/** Hard cap on simultaneously mounted blocks (thinning kicks in past this). */
-export const MAX_RENDERED = 64;
-
-/** Fork lane divergence: horizontal px offset per branch step, scaled by size. */
-export const BRANCH_DX = 0.62;
-/** Extra vertical rise applied per branch step so lanes angle upward+outward. */
-export const BRANCH_DY = 0.12;
-
 // ---------------------------------------------------------------------------
 // Cube geometry. A single unit cube drawn in a normalized viewBox; the SVG is
 // then scaled to `size` px by the component. 2:1 isometric.
@@ -124,12 +116,6 @@ export function posP(d: number, zoom: number): number {
   const C = tunnelC(zoom);
   const s = d < 0 ? -1 : 1;
   return s * (C / K) * Math.log(1 + K * Math.abs(d));
-}
-
-/** Inverse of |posP|: how many heights fit within `len` px of screen space. */
-export function invP(len: number, zoom: number): number {
-  const C = tunnelC(zoom);
-  return (Math.exp((len * K) / C) - 1) / K;
 }
 
 // ---------------------------------------------------------------------------
@@ -323,25 +309,9 @@ export function fullness(block: Block | undefined): number {
   return clamp(Math.max(byWeight, byTx), 0.06, 1);
 }
 
-/**
- * Decide which visual side a block belongs to. `forkSide` is the branch this
- * block was rendered as when a fork is active; otherwise we infer from status.
- */
-export function blockTheme(block: Block | undefined, forkSide?: BlockTheme): BlockTheme {
-  if (forkSide) return forkSide;
-  if (!block) return 'shared';
-  if (block.knots_status === 'invalid' || block.core_status === 'active') return 'core';
-  return 'shared';
-}
-
 // ---------------------------------------------------------------------------
 // Misc.
 // ---------------------------------------------------------------------------
-
-/** Block-height format: no '#', no commas — digits grouped by 3 with a space. 908160 -> "908 160". */
-export function heightLabel(h: number): string {
-  return Math.round(h).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
-}
 
 /** Difficulty epoch (retarget window) size + helper. */
 export const EPOCH = 2016;

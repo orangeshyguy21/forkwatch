@@ -53,7 +53,8 @@ services:
 
   core:
     build:
-      context: ../nodes/core
+      context: ../nodes
+      dockerfile: core/Dockerfile
     container_name: fw-core-prod
     restart: unless-stopped
     mem_limit: ${FW_NODE_MEM_LIMIT:-5g}
@@ -80,7 +81,8 @@ services:
 
   knots:
     build:
-      context: ../nodes/knots
+      context: ../nodes
+      dockerfile: knots/Dockerfile
     container_name: fw-knots-prod
     restart: unless-stopped
     mem_limit: ${FW_NODE_MEM_LIMIT:-5g}

@@ -17,7 +17,8 @@ x-logging: &logging
 services:
   core:
     build:
-      context: ../nodes/core
+      context: ../nodes
+      dockerfile: core/Dockerfile
     container_name: fw-core
     logging: *logging
     restart: unless-stopped
@@ -42,7 +43,8 @@ services:
 
   knots:
     build:
-      context: ../nodes/knots
+      context: ../nodes
+      dockerfile: knots/Dockerfile
     container_name: fw-knots
     logging: *logging
     restart: unless-stopped

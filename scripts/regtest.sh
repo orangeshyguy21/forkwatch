@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Forkwatch regtest control surface. One place to tweak the simulated chain and rebuild to it.
 #
-#   sg docker -c 'bash scripts/regtest.sh reset'                    # wipe + rebuild to compose/regtest.env
-#   sg docker -c 'bash scripts/regtest.sh reset LEAD_BLOCKS=20'     # ...with one-off overrides
-#   sg docker -c 'bash scripts/regtest.sh status'                   # where is the chain now
-#   sg docker -c 'bash scripts/regtest.sh fork-now'                 # stop waiting, fork this second
+#   bash scripts/regtest.sh reset                    # wipe + rebuild to compose/regtest.env
+#   bash scripts/regtest.sh reset LEAD_BLOCKS=20     # ...with one-off overrides
+#   bash scripts/regtest.sh status                   # where is the chain now
+#   bash scripts/regtest.sh fork-now                 # stop waiting, fork this second
 #
 # Persistent parameters live in compose/regtest.env. Overrides passed as KEY=VALUE args are saved
 # into compose/.regtest.runtime.env alongside the derived FORK_AT_HEIGHT, so `up`/`restart` after a
@@ -112,9 +112,9 @@ cmd_reset() {
 
  The app backfills the window from the nodes over the next few minutes.
 
- Watch:   sg docker -c 'docker logs -f fw-miner'
- Status:  sg docker -c 'bash scripts/regtest.sh status'
- Sooner:  sg docker -c 'bash scripts/regtest.sh fork-now'
+ Watch:   docker logs -f fw-miner
+ Status:  bash scripts/regtest.sh status
+ Sooner:  bash scripts/regtest.sh fork-now
 ====================================================================
 EOF
 }

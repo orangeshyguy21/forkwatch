@@ -5,11 +5,10 @@ import {
   CUBE_VIEWBOX,
   type BlockTheme,
   fullness,
-  heightLabel,
   themeColors,
 } from '../iso';
 import type { Block } from '../types';
-import { clsx, formatBytes, formatInt, shortHash } from '../util';
+import { clsx, fmtHeight, formatBytes, formatInt, shortHash } from '../util';
 import { SIGNAL_LABEL, SIGNAL_STICKER_BODY, ViolationStickers } from './ViolationStickers';
 
 interface Props {
@@ -410,7 +409,7 @@ function IsoBlockImpl({
       onClick={() => onSelect(height)}
       role="button"
       tabIndex={-1}
-      aria-label={heightLabel(height)}
+      aria-label={fmtHeight(height)}
     >
       {/* Cube-rain on a canvas UNDER the svg (the svg is positioned so it paints above), so the big
           face panels still slide in over the pile to seal it. */}
@@ -551,7 +550,7 @@ function IsoBlockImpl({
             textShadow: '0 1px 3px rgba(0,0,0,0.8)',
           }}
         >
-          {heightLabel(height)}
+          {fmtHeight(height)}
         </div>
       )}
 

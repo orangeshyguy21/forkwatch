@@ -93,6 +93,38 @@ struct Ctx {
     ws_conns: Arc<Semaphore>,
 }
 
+/// Read a numeric env var, falling back to `default`.
+///
+/// A var that is set but unparseable is logged rather than silently ignored: the process would
+/// otherwise come up looking healthy on a default the operator believes they overrode, which is the
+/// worst of both outcomes. `FW_`-prefixed compose vars arrive here already stripped of the prefix.
+fn env_num<T: std::str::FromStr>(key: &str, default: T) -> T {
+    let Ok(raw) = env::var(key) else { return default };
+    match raw.trim().parse() {
+        Ok(v) => v,
+        Err(_) => {
+            tracing::warn!(key, value = %raw, "not a number; using default");
+            default
+        }
+    }
+}
+
+/// Same, but for knobs where a non-positive value is meaningless — an interval, a timeout, a cap.
+/// These guards used to be applied by hand and inconsistently: six sites had them and four did not,
+/// with nothing at the call site to say which was which.
+fn env_positive<T: std::str::FromStr + PartialOrd + Default>(key: &str, default: T) -> T {
+    let v = env_num(key, T::default());
+    if v > T::default() {
+        return v;
+    }
+    default
+}
+
+/// Optional numeric env var — absent and unset mean the same thing to the caller.
+fn env_opt<T: std::str::FromStr>(key: &str) -> Option<T> {
+    env::var(key).ok().and_then(|s| s.trim().parse().ok())
+}
+
 #[tokio::main]
 async fn main() {
     // Structured logging. RUST_LOG selects levels; the default keeps ingest at info and silences
@@ -124,18 +156,17 @@ async fn main() {
             }
         }
     };
-    let poll_ms: u64 = env::var("POLL_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(2000);
+    let poll_ms: u64 = env_positive("POLL_MS", 2000);
     let bind = env::var("BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
     let static_dir = env::var("STATIC_DIR").unwrap_or_else(|_| "static".into());
-    let scheduled_fork_height: Option<i64> = env::var("FORK_AT_HEIGHT").ok().and_then(|s| s.parse().ok());
+    let scheduled_fork_height: Option<i64> = env_opt("FORK_AT_HEIGHT");
     let scheduled_fork_label: Option<String> = env::var("FORK_LABEL").ok().filter(|s| !s.is_empty());
     // Unset where difficulty retargeting does not bind (regtest), which disables the ETA's
     // reversion-to-target term and leaves it trusting the measured block rate alone.
-    let target_spacing_secs: Option<i64> =
-        env::var("TARGET_SPACING_SECS").ok().and_then(|s| s.parse().ok()).filter(|v| *v > 0);
-    let retarget_interval: i64 = env::var("RETARGET_INTERVAL")
-        .ok().and_then(|s| s.parse().ok()).filter(|v| *v > 0).unwrap_or(2016);
-    let floor_height: i64 = env::var("FLOOR_HEIGHT").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let target_spacing_secs: Option<i64> = env_opt::<i64>("TARGET_SPACING_SECS").filter(|v| *v > 0);
+    let retarget_interval: i64 = env_positive("RETARGET_INTERVAL", 2016);
+    // Zero is a legitimate floor (serve from genesis), so this clamps rather than rejecting.
+    let floor_height: i64 = env_num("FLOOR_HEIGHT", 0).max(0);
     let db_path = env::var("DB_PATH").ok();
     // Unset = decide by network (regtest only). Forcing it on requires txindex=1 on the node.
     let resolve_prevouts: Option<bool> = env::var("RESOLVE_PREVOUTS")
@@ -143,17 +174,11 @@ async fn main() {
         .map(|s| matches!(s.trim(), "1" | "true" | "yes" | "on"));
     // How stale the last successful poll may get before readiness fails. Several poll intervals, so
     // one slow poll does not flap a replica out of the load balancer.
-    let ready_max_stale = Duration::from_secs(
-        env::var("READY_MAX_STALE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(60),
-    );
-    let ws_max_conns: usize = env::var("WS_MAX_CONNS")
-        .ok().and_then(|s| s.parse().ok()).filter(|v| *v > 0).unwrap_or(WS_MAX_CONNS_DEFAULT);
-    let request_timeout = Duration::from_secs(
-        env::var("REQUEST_TIMEOUT_SECS")
-            .ok().and_then(|s| s.parse().ok()).filter(|v| *v > 0).unwrap_or(REQUEST_TIMEOUT_SECS_DEFAULT),
-    );
-    let max_inflight: usize = env::var("MAX_INFLIGHT_REQUESTS")
-        .ok().and_then(|s| s.parse().ok()).filter(|v| *v > 0).unwrap_or(MAX_INFLIGHT_DEFAULT);
+    let ready_max_stale = Duration::from_secs(env_positive("READY_MAX_STALE_SECS", 60));
+    let ws_max_conns: usize = env_positive("WS_MAX_CONNS", WS_MAX_CONNS_DEFAULT);
+    let request_timeout =
+        Duration::from_secs(env_positive("REQUEST_TIMEOUT_SECS", REQUEST_TIMEOUT_SECS_DEFAULT));
+    let max_inflight: usize = env_positive("MAX_INFLIGHT_REQUESTS", MAX_INFLIGHT_DEFAULT);
 
     let state = Arc::new(RwLock::new(AppState::default()));
 

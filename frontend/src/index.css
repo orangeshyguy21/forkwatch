@@ -5,8 +5,6 @@
 :root {
   color-scheme: dark;
   --bg: #050506;
-  --panel: #0d0d10;
-  --hair: rgba(255, 255, 255, 0.08);
 }
 
 html,
@@ -24,149 +22,6 @@ body {
   color: #e8e8ea;
   font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
-}
-
-/* ---- Custom scrollbar for the chain column ---- */
-.fw-scroll::-webkit-scrollbar {
-  width: 10px;
-}
-.fw-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-.fw-scroll::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: 999px;
-}
-.fw-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.22);
-}
-
-@layer components {
-  /* ================= CORE side (left) — monochrome circuit board ============= */
-  [data-side='core'] {
-    --side-fg: #f4f4f5;
-    --side-dim: #9a9a9e;
-    --side-border: rgba(244, 244, 245, 0.28);
-    --side-panel: #0b0b0d;
-    --side-accent: #ffffff;
-  }
-  .side-core-card {
-    background: linear-gradient(180deg, #0c0c0f 0%, #08080a 100%);
-    border: 1px solid var(--side-border);
-    border-radius: 2px;
-    position: relative;
-    overflow: hidden;
-  }
-  /* faint circuit traces: right-angle grid lines */
-  .side-core-card::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    opacity: 0.5;
-    background-image:
-      linear-gradient(to right, rgba(255, 255, 255, 0.05) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
-    background-size: 22px 22px;
-    background-position: -1px -1px;
-    mask-image: radial-gradient(120% 100% at 0% 0%, black 30%, transparent 75%);
-  }
-  /* "via" dots in the corner */
-  .side-core-card::after {
-    content: '';
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    width: 5px;
-    height: 5px;
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.35);
-    box-shadow:
-      -14px 0 0 rgba(255, 255, 255, 0.18),
-      0 14px 0 rgba(255, 255, 255, 0.18);
-  }
-
-  /* ================= KNOTS side (right) — emerald Celtic knot ================= */
-  [data-side='knots'] {
-    --side-fg: #d1fae5;
-    --side-dim: #6ee7b7;
-    --side-border: rgba(16, 185, 129, 0.45);
-    --side-panel: #04140d;
-    --side-accent: #34d399;
-  }
-  .side-knots-card {
-    background:
-      linear-gradient(180deg, rgba(6, 40, 28, 0.9) 0%, rgba(3, 20, 13, 0.95) 100%);
-    border: 1px solid var(--side-border);
-    border-radius: 12px;
-    position: relative;
-    overflow: hidden;
-  }
-  /* faint interwoven celtic-knot lattice */
-  .side-knots-card::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    opacity: 0.22;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 48 48'%3E%3Cg fill='none' stroke='%2334d399' stroke-width='1.4'%3E%3Cpath d='M0 24c6-12 18-12 24 0s18 12 24 0'/%3E%3Cpath d='M0 24c6 12 18 12 24 0s18-12 24 0'/%3E%3Ccircle cx='24' cy='24' r='7'/%3E%3C/g%3E%3C/svg%3E");
-    background-size: 48px 48px;
-    mask-image: radial-gradient(140% 120% at 100% 0%, black 25%, transparent 78%);
-  }
-
-  .card-invalid {
-    border-color: rgba(239, 68, 68, 0.7) !important;
-    box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.35), 0 0 22px rgba(239, 68, 68, 0.18) inset;
-  }
-
-  /* shared / agreed block: split seam down the middle */
-  .agreed-seam {
-    position: relative;
-    background: linear-gradient(90deg, #0b0b0d 0%, #0b0b0d 49.5%, #04140d 50.5%, #04140d 100%);
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    border-radius: 6px;
-    overflow: hidden;
-  }
-  .agreed-seam::before {
-    /* left = circuit grid */
-    content: '';
-    position: absolute;
-    inset: 0 50% 0 0;
-    pointer-events: none;
-    opacity: 0.4;
-    background-image:
-      linear-gradient(to right, rgba(255, 255, 255, 0.05) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
-    background-size: 20px 20px;
-    mask-image: linear-gradient(to right, black, transparent);
-  }
-  .agreed-seam::after {
-    /* right = knot lattice */
-    content: '';
-    position: absolute;
-    inset: 0 0 0 50%;
-    pointer-events: none;
-    opacity: 0.2;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 48 48'%3E%3Cg fill='none' stroke='%2334d399' stroke-width='1.4'%3E%3Cpath d='M0 24c6-12 18-12 24 0s18 12 24 0'/%3E%3Cpath d='M0 24c6 12 18 12 24 0s18-12 24 0'/%3E%3Ccircle cx='24' cy='24' r='7'/%3E%3C/g%3E%3C/svg%3E");
-    background-size: 44px 44px;
-    mask-image: linear-gradient(to left, black, transparent);
-  }
-  .agreed-seam .seam-line {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 50%;
-    width: 1px;
-    transform: translateX(-0.5px);
-    background: linear-gradient(
-      to bottom,
-      transparent,
-      rgba(255, 255, 255, 0.18) 20%,
-      rgba(52, 211, 153, 0.25) 80%,
-      transparent
-    );
-    pointer-events: none;
-  }
 }
 
 /* ---- Loading: gently pulse the (dim) cube shape itself — no rectangular overlay ---- */
@@ -247,14 +102,6 @@ body {
   100% { opacity: 1;    transform: scale(1);     filter: brightness(1); }
 }
 
-.fw-fadein {
-  animation: fwFadeIn 400ms ease-out both;
-}
-@keyframes fwFadeIn {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
 /* ---- Focus pop: when a block lands in focus the REST of the chain recoils away from it along the
    chain axis and springs back — the blockchain "stretches" to admit the new focus, instead of the
    focused block squashing. Per-block offset (--stretch-dy) is set inline, scaled by distance + size. */
@@ -269,8 +116,6 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .animate-tear,
-  .animate-pulse-slow,
   .fw-loading,
   .fw-spawn-base,
   .fw-spawn-out,

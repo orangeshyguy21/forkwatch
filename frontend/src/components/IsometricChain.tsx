@@ -13,7 +13,6 @@ import {
   focusAmount,
   focusLift,
   focusPop,
-  heightLabel,
   MAX_SIZE,
   posP,
   sizeFor,
@@ -21,7 +20,7 @@ import {
 import { useScrollFocus } from '../hooks/useScrollFocus';
 import { useStore } from '../store';
 import type { Block, ViolationsResponse } from '../types';
-import { cleanCoinbaseTag, clsx, formatBytes, formatInt, relativeTime, shortHash } from '../util';
+import { cleanCoinbaseTag, clsx, fmtHeight, formatBytes, formatInt, relativeTime, shortHash } from '../util';
 import { EpochRail } from './EpochRail';
 import { IsoBlock } from './IsoBlock';
 import { ScrollRail } from './ScrollRail';
@@ -448,6 +447,13 @@ export function IsometricChain() {
     [setTarget],
   );
 
+  // Stable identities for the rails' callbacks. This component re-renders on every animation frame
+  // while the focus glides, and the rails are memo'd — an inline arrow here would give them a fresh
+  // prop each frame, defeating the memo and re-registering their window pointer listeners ~480x/s.
+  const seek = useCallback((h: number) => setTarget(h, true), [setTarget]);
+  const seekTip = useCallback(() => setTarget(tip, true), [setTarget, tip]);
+  const seekFork = useCallback(() => setTarget(forkAt, true), [setTarget, forkAt]);
+
   // -------- Keyboard -------- (window-level so arrows scroll the chain without needing to click it
   // first; ignored while typing in a field). ↑/↓ step one block, PgUp/PgDn ten, Home/End jump.
   useEffect(() => {
@@ -524,7 +530,7 @@ export function IsometricChain() {
           focus={target}
           signaling={state.signaling}
           forkHeight={forked ? forkAt : null}
-          onSeek={(h) => setTarget(h, true)}
+          onSeek={seek}
         />
       )}
 
@@ -622,7 +628,7 @@ export function IsometricChain() {
               zIndex: 3000,
             }}
           >
-            {heightLabel(l.height)}
+            {fmtHeight(l.height)}
           </div>
         ))}
 
@@ -644,7 +650,7 @@ export function IsometricChain() {
                 textShadow: '0 4px 30px rgba(0,0,0,0.95)',
               }}
             >
-              {heightLabel(bigNum)}
+              {fmtHeight(bigNum)}
             </div>
           </div>
         )}
@@ -653,7 +659,7 @@ export function IsometricChain() {
         {!notReady && (
           <div className="pointer-events-none absolute right-4 top-4 flex flex-col items-end gap-1.5">
             <div className="rounded-md border border-white/10 bg-black/50 px-2.5 py-1 font-mono text-[11px] text-zinc-400 backdrop-blur">
-              focus {heightLabel(bigNum)}
+              focus {fmtHeight(bigNum)}
             </div>
             <div
               className={clsx(
@@ -677,7 +683,7 @@ export function IsometricChain() {
         {knotsTipOff && knotsTip != null && (
           <button
             onClick={() => setTarget(knotsTip, true)}
-            title={`Jump to orphaned-chain tip at ${heightLabel(knotsTip)}`}
+            title={`Jump to orphaned-chain tip at ${fmtHeight(knotsTip)}`}
             className="absolute flex -translate-x-1/2 items-center gap-1.5 rounded-md border border-slate-400/40 bg-slate-500/15 px-2.5 py-1 font-mono text-[11px] font-bold tabular-nums text-slate-200 backdrop-blur transition hover:bg-slate-400/25"
             style={{
               left: baseX + LANE_GAP,
@@ -685,7 +691,7 @@ export function IsometricChain() {
               zIndex: 3200,
             }}
           >
-            {knotsTipOff === 'below' ? '⤓' : '⤒'} {heightLabel(knotsTip)}
+            {knotsTipOff === 'below' ? '⤓' : '⤒'} {fmtHeight(knotsTip)}
           </button>
         )}
 
@@ -698,9 +704,9 @@ export function IsometricChain() {
           dataFloor={floor}
           focus={target}
           forkHeight={forked ? forkAt : null}
-          onSeek={(h) => setTarget(h, true)}
-          onTip={() => setTarget(tip, true)}
-          onFork={() => setTarget(forkAt, true)}
+          onSeek={seek}
+          onTip={seekTip}
+          onFork={seekFork}
         />
       )}
     </div>
@@ -727,7 +733,7 @@ function BlockDrawer({
   return (
     <div className="flex h-full w-80 shrink-0 flex-col border-r border-white/10 bg-black/70 backdrop-blur">
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-        <div className="font-mono text-sm font-bold text-zinc-100">block {heightLabel(height)}</div>
+        <div className="font-mono text-sm font-bold text-zinc-100">block {fmtHeight(height)}</div>
         <button
           onClick={onClose}
           className="rounded px-2 py-1 text-xs text-zinc-400 hover:bg-white/10 hover:text-zinc-100"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Reset the Forkwars regtest stack to a clean state and run the e2e scenarios.
-# Usage: sg docker -c 'bash e2e/run.sh'   (from the repo root)
+# Usage: bash e2e/run.sh   (from the repo root)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 COMPOSE="$HERE/../compose/docker-compose.regtest.yml"

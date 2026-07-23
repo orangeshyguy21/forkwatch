@@ -28,12 +28,10 @@ const CLOCK_RETIRES_AT_BLOCKS = 21;
  */
 const RECALC_EVERY_BLOCKS = 72;
 
-/** A held ETA: the estimate, plus its mean and 80% bounds pinned to absolute wall-clock times. */
+/** A held ETA: the estimate, plus its predicted arrival pinned to an absolute wall-clock time. */
 interface EtaSnapshot {
   eta: EtaEstimate;
   targetMs: number;
-  loMs: number;
-  hiMs: number;
 }
 
 /**
@@ -71,12 +69,7 @@ function useHeldEta(
   // Anchor on the tip's timestamp so the countdown reflects time already elapsed since it, clamped
   // to now because a header timestamp may legitimately sit up to two hours in the future.
   const anchorMs = Math.min(eta.lastTime * 1000, now);
-  const snap: EtaSnapshot = {
-    eta,
-    targetMs: anchorMs + eta.seconds * 1000,
-    loMs: anchorMs + eta.lo * 1000,
-    hiMs: anchorMs + eta.hi * 1000,
-  };
+  const snap: EtaSnapshot = { eta, targetMs: anchorMs + eta.seconds * 1000 };
   held.current = { bucket, target: targetHeight, snap };
   return snap;
 }
@@ -200,9 +193,9 @@ interface StatusHero {
   kind: 'status';
   tone: Tone;
   value: string;
-  unit?: string;
   eyebrow: string;
   caption: string;
+  /** Re-mount key: changing it replays the hero's entry animation, so a new block reads as a beat. */
   pulse?: string;
   /** Set on a split: the per-branch blocks-since-fork, rendered as segment counters. */
   split?: { core: number; knots: number };
@@ -222,7 +215,6 @@ interface CountdownHero {
    * hidden, because guessing would flash the block count for a frame before the clock takes over.
    */
   face: 'clock' | 'blocks' | 'pending';
-  pulse: string;
 }
 
 type Hero = StatusHero | CountdownHero;
@@ -230,13 +222,16 @@ type Hero = StatusHero | CountdownHero;
 function useHero(state: ChainState | null): Hero | null {
   const recentBlocks = useStore((s) => s.recentBlocks);
   const recentLoaded = useStore((s) => s.recentLoaded);
-  const now = useNow(1000);
   const rate = useMemo(() => estimateRate(recentBlocks), [recentBlocks]);
 
   // Countdown inputs, hoisted above the branches below because the held ETA is a hook and so cannot
   // sit inside the `sf && !sf.reached` arm where it is actually used.
   const sf = state?.scheduled_fork ?? null;
   const blocksUntil = sf && !sf.reached ? sf.blocks_until : null;
+  // Only the countdown reads the clock. With no target to count down to, a 1 Hz tick would still
+  // re-render the header, both node flanks and the race rail's whole SVG every second to draw
+  // exactly what was already on screen — so the ticker is switched off instead.
+  const now = useNow(blocksUntil != null ? 1000 : 0);
   // How many of those blocks are still mined under today's difficulty. A block's difficulty comes
   // from its epoch, and `next_retarget_height` is the first height of the next one — so the last
   // block at the current difficulty is the one below it, hence the -1.
@@ -337,7 +332,6 @@ function useHero(state: ChainState | null): Hero | null {
       blocks: n,
       seconds,
       face,
-      pulse: String(rate?.lastHeight ?? n),
     };
   }
 
@@ -412,11 +406,6 @@ function HeroBlock({ hero }: { hero: Hero }) {
           >
             {hero.value}
           </span>
-          {hero.unit && (
-            <span className={clsx('text-lg font-bold uppercase tracking-widest', tone.dim)}>
-              {hero.unit}
-            </span>
-          )}
         </div>
       )}
 

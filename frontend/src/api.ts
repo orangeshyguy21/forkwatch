@@ -1,5 +1,5 @@
 // Same-origin REST client for the Forkwars backend.
-import type { BlocksPage, BlocksRange, ChainState, ViolationsResponse } from './types';
+import type { BlocksPage, BlocksRange, ChainState, Side, ViolationsResponse } from './types';
 
 const API_BASE = '/api';
 
@@ -15,15 +15,10 @@ export function fetchState(signal?: AbortSignal): Promise<ChainState> {
   return getJson<ChainState>(`${API_BASE}/state`, signal);
 }
 
-export function fetchBlocks(
-  opts: { before?: number; limit?: number } = {},
-  signal?: AbortSignal,
-): Promise<BlocksPage> {
-  const params = new URLSearchParams();
-  if (typeof opts.before === 'number') params.set('before', String(opts.before));
-  params.set('limit', String(opts.limit ?? 30));
-  const qs = params.toString();
-  return getJson<BlocksPage>(`${API_BASE}/blocks?${qs}`, signal);
+// Newest `limit` blocks, tip-first. The endpoint also supports a `before` cursor for paging
+// downwards; nothing needs it since the isometric scroller reads height ranges instead.
+export function fetchBlocks(limit = 30, signal?: AbortSignal): Promise<BlocksPage> {
+  return getJson<BlocksPage>(`${API_BASE}/blocks?limit=${limit}`, signal);
 }
 
 // Blocks present in the inclusive height range [from, to], ascending. Gaps are
@@ -32,7 +27,7 @@ export function fetchBlocks(
 export function fetchBlocksRange(
   from: number,
   to: number,
-  chain?: 'core' | 'knots',
+  chain?: Side,
   signal?: AbortSignal,
 ): Promise<BlocksRange> {
   const params = new URLSearchParams();

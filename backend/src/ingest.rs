@@ -178,21 +178,7 @@ fn poll_once(
     }
 
     // 2. Backfill history downward toward the prune floor. Fetch lock-free, insert under lock.
-    let start = {
-        let g = state.read();
-        let core_map = build_height_map(&g.by_hash, &core_info.bestblockhash);
-        core_map.keys().min().copied().and_then(|low| {
-            if low > backfill_target {
-                core_map
-                    .get(&low)
-                    .and_then(|h| g.by_hash.get(h))
-                    .map(|b| (b.prev_hash.clone(), low - 1))
-            } else {
-                None
-            }
-        })
-    };
-    if let Some((parent, ph)) = start {
+    if let Some((parent, ph)) = backfill_start(state, &core_info.bestblockhash, backfill_target) {
         let fetched = fetch_batch(&nodes.core, &parent, ph, backfill_target, activation, prevouts_ok, BACKFILL_BATCH);
         if !fetched.is_empty() {
             let mut g = state.write();
@@ -211,23 +197,8 @@ fn poll_once(
     // available (not just the near-tip cap) for /api/blocks/range?chain=knots — so each node's
     // perspective of the fork can be visualized end to end.
     {
-        // Resolve the walk's starting point under a read guard, then release it: the fetch loop below
-        // acquires the lock per block rather than holding it across RPC (same reason as step 1).
-        let start = {
-            let g = state.read();
-            let knots_map = build_height_map(&g.by_hash, &knots_info.bestblockhash);
-            knots_map.keys().min().copied().and_then(|low| {
-                if low > backfill_target {
-                    knots_map
-                        .get(&low)
-                        .and_then(|hash| g.by_hash.get(hash))
-                        .map(|b| (b.prev_hash.clone(), low - 1))
-                } else {
-                    None
-                }
-            })
-        };
-        if let Some((parent, ph)) = start {
+        if let Some((parent, ph)) = backfill_start(state, &knots_info.bestblockhash, backfill_target)
+        {
             let n = fetch_tip_down(
                 &nodes.knots, &parent, ph, state, conn, backfill_target, activation, prevouts_ok, BACKFILL_BATCH,
             );
@@ -525,6 +496,29 @@ fn resolve_prevouts(rpc: &Rpc, block: &bitcoin::Block) -> HashMap<bitcoin::OutPo
     map
 }
 
+/// Where a downward backfill walk should resume for the chain ending at `tip`: the parent hash of the
+/// lowest block we have cached, and the height that parent sits at. `None` once the walk has reached
+/// `target`, or when nothing is cached for this chain yet.
+///
+/// Takes its own read guard and drops it on return, so the fetch loop that follows acquires the lock
+/// per block rather than holding it across RPC. Both backfill phases (Core history, Knots minority
+/// branch) resolve their start identically and differ only in which tip they walk from.
+fn backfill_start(
+    state: &Arc<RwLock<AppState>>,
+    tip: &str,
+    target: i64,
+) -> Option<(String, i64)> {
+    let g = state.read();
+    let map = build_height_map(&g.by_hash, tip);
+    let low = map.keys().min().copied()?;
+    if low <= target {
+        return None;
+    }
+    map.get(&low)
+        .and_then(|hash| g.by_hash.get(hash))
+        .map(|b| (b.prev_hash.clone(), low - 1))
+}
+
 /// Build height -> hash for the contiguous active chain ending at `tip` (down to the lowest known block).
 fn build_height_map(by_hash: &HashMap<String, Block>, tip: &str) -> HashMap<i64, String> {
     let mut m = HashMap::new();
@@ -599,9 +593,19 @@ fn build_state_json(
     let tip_height = core_tip_h.max(knots_tip_h);
     let agreed = !core.bestblockhash.is_empty() && core.bestblockhash == knots.bestblockhash;
 
+    // Highest height at which both chains hold the same hash. Bounded below by the lowest height
+    // BOTH maps cover: a match needs an entry in each, so heights under that can never produce one
+    // and walking them to 0 is pure waste — on mainnet that is ~900k wasted lookups per poll every
+    // time the two chains have no common block inside the cached window.
+    let scan_floor = core_map
+        .keys()
+        .min()
+        .copied()
+        .unwrap_or(0)
+        .max(knots_map.keys().min().copied().unwrap_or(0));
     let mut lca = -1i64;
     let mut h = core_tip_h.min(knots_tip_h);
-    while h >= 0 {
+    while h >= scan_floor {
         if let (Some(a), Some(b)) = (core_map.get(&h), knots_map.get(&h)) {
             if a == b {
                 lca = h;

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Clear the Forkwars app SQLite DB for an environment, then restart the app so it re-backfills
-# from the node tips. Usage:  sg docker -c 'bash scripts/clear-db.sh [regtest|mainnet]'
+# from the node tips. Usage:  bash scripts/clear-db.sh [regtest|mainnet]
 set -euo pipefail
 ENVN="${1:-regtest}"
 HERE=$(cd "$(dirname "$0")/.." && pwd)

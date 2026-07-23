@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { EPOCH, clamp, epochOf } from '../iso';
 import { clsx, fmtHeight, niceStep } from '../util';
 
@@ -25,7 +25,10 @@ interface Props {
 // its label are never clipped by the buttons above or the floor footer below.
 const PAD = 18;
 
-export function ScrollRail({ tip, floor, dataFloor, focus, forkHeight, onSeek, onTip, onFork }: Props) {
+// memo: the parent (IsometricChain) re-renders on every animation frame while the focus glides,
+// but this rail's props only move when the SNAPPED target, the tip or the floor does. Without the
+// memo each frame reconciled the whole rail — up to a few thousand tick/marker nodes at 60 Hz.
+export const ScrollRail = memo(function ScrollRail({ tip, floor, dataFloor, focus, forkHeight, onSeek, onTip, onFork }: Props) {
   const railRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
   const [railH, setRailH] = useState(600);
@@ -256,4 +259,4 @@ export function ScrollRail({ tip, floor, dataFloor, focus, forkHeight, onSeek, o
       </div>
     </div>
   );
-}
+});

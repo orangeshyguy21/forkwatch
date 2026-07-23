@@ -19,6 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends libstdc++6 open
  && groupadd -g 1000 bitcoin && useradd -u 1000 -g 1000 -m -d /data bitcoin
 COPY --from=fetch /usr/local/bin/bitcoind    /usr/local/bin/bitcoind
 COPY --from=fetch /usr/local/bin/bitcoin-cli /usr/local/bin/bitcoin-cli
+# Build context is nodes/, not nodes/core|knots — both node images share one entrypoint. It derives
+# the rpcauth hash and drives the assumeutxo snapshot load, so the two nodes (which are this
+# project's security boundary) must not be able to drift apart in it.
 COPY entrypoint.sh /usr/local/bin/node-entrypoint.sh
 RUN chmod +x /usr/local/bin/node-entrypoint.sh
 USER bitcoin
