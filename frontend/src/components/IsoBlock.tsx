@@ -20,8 +20,10 @@ interface Props {
   depth: number; // 0..1 opacity / atmospheric
   reducedMotion: boolean;
   selected: boolean;
-  /** When true, run the "build from falling pieces" spawn animation. */
-  materialize?: boolean;
+  /** Build animation: 'spawn' = full new-block sequence (chain-build wait + cube rain + panels),
+   *  'intro' = page-load clamp-in — the same base-draw + panel-close choreography on a tight,
+   *  immediate timeline, with no cube rain. */
+  materialize?: false | 'spawn' | 'intro';
   /** Signed px this block should recoil along the chain axis when a new block lands in focus — the
    *  "chain stretches" pop. The focused block itself gets 0 (it stays put); neighbours spring out
    *  away from the focus and settle back. */
@@ -71,6 +73,12 @@ const SPAWN_BASE_AT = 700; // base diamond starts drawing (after the chain has r
 const SPAWN_VOX_T0 = 980; // first cubes begin to fall
 const SPAWN_VOX_PERIOD = 1000; // spread of the cube fall
 const SPAWN_ENCLOSE = 2350; // panels slide in to seal, once the cubes have mostly landed
+
+// Page-load intro clamp-in ('intro' materialize): same base-draw → panels-seal choreography, but
+// there is no chain to wait for and no cube rain, so it runs immediately and tight.
+const INTRO_BASE_AT = 0; // base diamond draws straight away
+const INTRO_ENCLOSE = 360; // panels clamp in as the base draw finishes
+const INTRO_STICKER_AT = 880; // stickers slap on right after the panels lock (360 + 440 + margin)
 const SPAWN_BASE = [
   [50, 66],
   [100, 91],
@@ -322,7 +330,10 @@ function IsoBlockImpl({
   const h = size * CUBE_ASPECT;
   const showDetail = focusAmt > 0.5 && !loading;
   const gid = `g-${theme}-${loading ? 'l' : 'f'}`;
-  const animate = materialize && !reducedMotion && !loading;
+  const animate = !!materialize && !reducedMotion && !loading;
+  const rain = animate && materialize === 'spawn'; // the intro clamp-in skips the cube rain
+  const baseAt = materialize === 'intro' ? INTRO_BASE_AT : SPAWN_BASE_AT;
+  const encloseAt = materialize === 'intro' ? INTRO_ENCLOSE : SPAWN_ENCLOSE;
   const labelSize = Math.max(10, Math.min(30, size * 0.16));
 
 
@@ -338,7 +349,7 @@ function IsoBlockImpl({
   // The visible surface line is a downward chevron meeting at the near corner.
   const waterPath = `M0,${wl.toFixed(2)} L50,${wlFront.toFixed(2)} L100,${wl.toFixed(2)}`;
   // Spawn "pour": the contents start pushed fully below the base (rise = fill height) and rise into place.
-  const riseStyle = { '--rise': `${(fillFrac * BODY_H).toFixed(1)}px`, animationDelay: `${SPAWN_ENCLOSE}ms` } as React.CSSProperties;
+  const riseStyle = { '--rise': `${(fillFrac * BODY_H).toFixed(1)}px`, animationDelay: `${encloseAt}ms` } as React.CSSProperties;
 
   const glow = c.glow;
   const filter = glow
@@ -349,7 +360,7 @@ function IsoBlockImpl({
   // to the block's fullness (bottom `fillRows` of N layers), so the assembly height mirrors how full
   // the block is; each micro-cube rains in scattered (randomized offset + delay). Back-to-front.
   const voxels = useMemo<VoxCell[]>(() => {
-    if (!animate) return [];
+    if (!rain) return [];
     const f = fullness(block);
     // Shell of the filled region ≈ N² (waterline surface) + 2·N·fillRows (the two front flanks).
     // Step N down until that stays under the device's perf budget.
@@ -400,7 +411,7 @@ function IsoBlockImpl({
     for (let k = kTop; k < N; k++) for (let i = 0; i < N; i++) push(i, 0, k, false); // right flank (j=0)
     out.sort((a, b) => b.d - a.d); // back-to-front
     return out;
-  }, [animate, block?.tx_count, block?.weight]);
+  }, [rain, block?.tx_count, block?.weight]);
 
   return (
     <div
@@ -413,7 +424,7 @@ function IsoBlockImpl({
     >
       {/* Cube-rain on a canvas UNDER the svg (the svg is positioned so it paints above), so the big
           face panels still slide in over the pile to seal it. */}
-      {animate && voxels.length > 0 && (
+      {rain && voxels.length > 0 && (
         <VoxelRain cells={voxels} size={size} colors={{ top: c.top, left: c.left, right: c.right }} />
       )}
       <svg
@@ -456,7 +467,7 @@ function IsoBlockImpl({
         {/* Spawn base: the diamond outline draws on, then fades once the panels seal. The cube-rain
             it anchors is drawn on the VoxelRain canvas behind this svg. */}
         {animate && (
-          <g className="fw-spawn-out" style={{ animationDelay: `${SPAWN_ENCLOSE + 240}ms` }}>
+          <g className="fw-spawn-out" style={{ animationDelay: `${encloseAt + 240}ms` }}>
             <path
               className="fw-spawn-base"
               d={`M ${poly(SPAWN_BASE)} Z`}
@@ -465,7 +476,7 @@ function IsoBlockImpl({
               strokeWidth={1.4}
               strokeDasharray={224}
               strokeDashoffset={224}
-              style={{ animationDelay: `${SPAWN_BASE_AT}ms`, filter: 'drop-shadow(0 0 4px rgba(52,211,153,0.55))' }}
+              style={{ animationDelay: `${baseAt}ms`, filter: 'drop-shadow(0 0 4px rgba(52,211,153,0.55))' }}
             />
           </g>
         )}
@@ -473,11 +484,11 @@ function IsoBlockImpl({
         {/* Finished cube as three face panels. During a spawn each slides + fades in to enclose the
             voxels; otherwise they're just the static cube. Drawn left → right → top (top on top). The
             unfilled walls are dark; the vivid contents (fullness meter) are layered on top next. */}
-        <g className={clsx(animate && 'fw-panel-left')} style={animate ? { animationDelay: `${SPAWN_ENCLOSE}ms` } : undefined}>
+        <g className={clsx(animate && 'fw-panel-left')} style={animate ? { animationDelay: `${encloseAt}ms` } : undefined}>
           <polygon points={CUBE_FACES.left} fill={c.left} stroke={c.edge} strokeWidth={0.8} />
         </g>
 
-        <g className={clsx(animate && 'fw-panel-right')} style={animate ? { animationDelay: `${SPAWN_ENCLOSE}ms` } : undefined}>
+        <g className={clsx(animate && 'fw-panel-right')} style={animate ? { animationDelay: `${encloseAt}ms` } : undefined}>
           <polygon points={CUBE_FACES.right} fill={`url(#${gid}-r)`} stroke={c.edge} strokeWidth={0.8} />
         </g>
 
@@ -519,7 +530,7 @@ function IsoBlockImpl({
           )}
         </g>
 
-        <g className={clsx(animate && 'fw-panel-top')} style={animate ? { animationDelay: `${SPAWN_ENCLOSE}ms` } : undefined}>
+        <g className={clsx(animate && 'fw-panel-top')} style={animate ? { animationDelay: `${encloseAt}ms` } : undefined}>
           <polygon points={CUBE_FACES.top} fill={`url(#${gid}-t)`} stroke={c.edge} strokeWidth={1} />
           {selected && (
             <polygon points={CUBE_FACES.top} fill="none" stroke="#fff" strokeWidth={1.6} opacity={0.9} />
@@ -532,6 +543,7 @@ function IsoBlockImpl({
           rules={block.rdts_rule_hits}
           size={size}
           animate={animate}
+          at={materialize === 'intro' ? INTRO_STICKER_AT : undefined}
           reducedMotion={reducedMotion}
         />
       )}

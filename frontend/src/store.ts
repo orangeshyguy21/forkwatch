@@ -34,7 +34,9 @@ interface StoreState {
   blocksByHeight: Map<number, Block>; // Core node's chain
   knotsBlocksByHeight: Map<number, Block>; // Knots node's chain (its minority branch during a fork)
 
-  refreshState: () => Promise<void>;
+  /** `fresh` bypasses the browser HTTP cache — used by bootstrap so a reload cannot start the view
+   *  from a stale cached tip (see fetchState). The fallback poll leaves it off. */
+  refreshState: (fresh?: boolean) => Promise<void>;
   refreshRecent: () => Promise<void>;
   /** Apply a WebSocket push frame. Returns true when the frame could NOT be applied completely and
    *  the caller should fall back to HTTP — either it carried no payload, or the pushed blocks do not
@@ -44,7 +46,7 @@ interface StoreState {
   bootstrap: () => Promise<void>;
   // Fill blocksByHeight for the inclusive window [from, to]. Fetches only the
   // aligned chunks that contain missing heights and dedupes in-flight chunks.
-  fetchRange: (from: number, to: number) => Promise<void>;
+  fetchRange: (from: number, to: number, fresh?: boolean) => Promise<void>;
   // Same, but for the Knots chain (chain=knots) into knotsBlocksByHeight.
   fetchKnotsRange: (from: number, to: number) => Promise<void>;
 }
@@ -63,7 +65,7 @@ const SIDES: Record<Side, { map: 'blocksByHeight' | 'knotsBlocksByHeight'; tipOf
 export const useStore = create<StoreState>((set, get) => {
   // One chunked fetcher for both chains. Previously this existed twice, and the copies had already
   // drifted apart in their clamping and their write-back behaviour.
-  const fetchSide = async (side: Side, from: number, to: number) => {
+  const fetchSide = async (side: Side, from: number, to: number, fresh = false) => {
     const { map: mapKey, tipOf } = SIDES[side];
     const s = get();
     const tip = tipOf(s);
@@ -92,7 +94,7 @@ export const useStore = create<StoreState>((set, get) => {
     await Promise.all(
       starts.map(async (c) => {
         try {
-          const page = await fetchBlocksRange(c, c + CHUNK - 1, side);
+          const page = await fetchBlocksRange(c, c + CHUNK - 1, side, undefined, fresh);
           set((cur) => {
             const next = new Map(cur[mapKey]);
             for (const b of page.blocks) next.set(b.height, b);
@@ -100,9 +102,20 @@ export const useStore = create<StoreState>((set, get) => {
             // chain's own tip, which during a fork is behind Core's — writing it back would drag
             // the scroller's ceiling down onto the minority branch.
             if (side === 'knots') return { [mapKey]: next } as Partial<StoreState>;
+            // A range response may only RAISE the known tip, never lower it. These responses are
+            // cacheable (`max-age=5`), so a scroll-driven range fetch can be served an older tip
+            // than the one already in hand and would otherwise drag the whole view backward — the
+            // chain's top block would unmount and remount, restarting its animation. A genuine
+            // reorg still lowers the tip: /api/state and the WebSocket push assign it directly.
+            const pagedTip = typeof page.tip_height === 'number' ? page.tip_height : null;
             return {
               blocksByHeight: next,
-              tipHeight: typeof page.tip_height === 'number' ? page.tip_height : cur.tipHeight,
+              tipHeight:
+                pagedTip == null
+                  ? cur.tipHeight
+                  : cur.tipHeight == null
+                    ? pagedTip
+                    : Math.max(cur.tipHeight, pagedTip),
               pruneFloor: typeof page.prune_floor === 'number' ? page.prune_floor : cur.pruneFloor,
             };
           });
@@ -131,10 +144,10 @@ export const useStore = create<StoreState>((set, get) => {
     blocksByHeight: new Map<number, Block>(),
     knotsBlocksByHeight: new Map<number, Block>(),
 
-    refreshState: async () => {
+    refreshState: async (fresh = false) => {
       set({ stateLoading: true });
       try {
-        const state = await fetchState();
+        const state = await fetchState(undefined, fresh);
         set((s) => ({
           state,
           stateError: null,
@@ -204,19 +217,21 @@ export const useStore = create<StoreState>((set, get) => {
     },
 
     bootstrap: async () => {
-      await get().refreshState();
+      // Both bootstrap reads bypass the browser cache: they decide which height the whole view
+      // anchors on, and a cached response makes a reload start one block behind the real tip.
+      await get().refreshState(true);
       // Kicked off before the range fetch is awaited: the header shows neither countdown face until
       // this settles, so any delay here is dead space at the top of the page.
       void get().refreshRecent();
       // Seed the isometric window near the tip; this also gives us prune_floor.
       const tip = get().tipHeight;
       if (typeof tip === 'number') {
-        await get().fetchRange(tip - 120, tip);
+        await get().fetchRange(tip - 120, tip, true);
       }
       set({ initialized: true });
     },
 
-    fetchRange: (from, to) => fetchSide('core', from, to),
+    fetchRange: (from, to, fresh) => fetchSide('core', from, to, fresh),
     fetchKnotsRange: (from, to) => fetchSide('knots', from, to),
   };
 });

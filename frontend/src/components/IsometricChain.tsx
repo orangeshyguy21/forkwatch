@@ -47,6 +47,18 @@ const DRAWER_W = 320;
  *  base/cubes/panels follow (their delays live in IsoBlock and are timed to start after this). */
 const CHAIN_BUILD_MS = 480;
 
+/** Page-load intro (one-shot per load): once the data is ready the focused block clamps in — the
+ *  spawn's base-draw + panel-close, no cube rain (IsoBlock's 'intro' materialize) — then the chain
+ *  links draw away from it and the rest of the visible chain pops into place one block after
+ *  another, accelerating into the distance. Never replayed on scroll or on later block arrivals. */
+const INTRO_CHAIN_T0 = 520; // links start drawing off the clamped block as its panels seal
+const INTRO_CHAIN_MS = 300; // spread of the link draw across a focus-adjacent gap
+const INTRO_POP_T0 = 780; // first neighbour pops as the links reach it
+const INTRO_POP_SPREAD = 1000; // extra delay budget across the rest of the cascade
+const INTRO_POP_DECAY = 0.82; // per-block geometric acceleration into the distance
+const INTRO_TOTAL_MS = 2500; // whole intro is over by here; animation classes drop off
+const INTRO_DATA_WAIT_MS = 1200; // max hold for the focused block's data before starting anyway
+
 interface Node {
   key: string;
   height: number;
@@ -83,10 +95,19 @@ interface LanePt {
 const BOT_VERTEX = 0.58;
 const TOP_FACE = 0.33;
 
+/** Staggered link-by-link draw of a chain segment: `t0` ms in, the links fade on over `ms` —
+ *  bottom-up for a spawning block (the chain climbs to meet it), top-down for the page-load intro
+ *  (the chain descends from the clamped-in focus block). */
+interface ChainBuild {
+  t0: number;
+  ms: number;
+  topDown: boolean;
+}
+
 /** Full interlocking chain across ONE gap segment. Lives only in the gap — from the bottom vertex of
  *  the upper block to the top vertex of the lower one — so it emerges from the bottom and seats into
  *  the top, never crossing a block surface. Reserved for the focused block + the fork moment. */
-function chainSegment(a: LanePt, b: LanePt, color: string, kp: string, build = false): JSX.Element[] {
+function chainSegment(a: LanePt, b: LanePt, color: string, kp: string, build?: ChainBuild): JSX.Element[] {
   const upper = a.y <= b.y ? a : b;
   const lower = a.y <= b.y ? b : a;
   const x0 = upper.x;
@@ -107,8 +128,9 @@ function chainSegment(a: LanePt, b: LanePt, color: string, kp: string, build = f
     const narrow = j % 2 === 1; // alternate flat / edge-on links => interlock
     // On a spawning block, the chain grows link-by-link from the EXISTING chain (lower, j=n-1) UP to
     // where the new block will assemble (upper, j=0), on a fixed total time regardless of gap size —
-    // so it reliably finishes before the block's base draws. j=0 (block end) lands last.
-    const linkDelay = build ? ((n - 1 - j) / Math.max(1, n - 1)) * CHAIN_BUILD_MS : 0;
+    // so it reliably finishes before the block's base draws. j=0 (block end) lands last. The intro
+    // runs the same stagger top-down instead (the chain descends from the clamped block).
+    const linkDelay = build ? build.t0 + ((build.topDown ? j : n - 1 - j) / Math.max(1, n - 1)) * build.ms : 0;
     els.push(
       <ellipse
         key={`${kp}-${j}`}
@@ -129,8 +151,9 @@ function chainSegment(a: LanePt, b: LanePt, color: string, kp: string, build = f
 }
 
 /** Simpler connector for every OTHER gap: a short tether confined to the gap (inset from both
- *  vertices) so it never slices through a translucent block face. */
-function simpleConnector(a: LanePt, b: LanePt, color: string, kp: string): JSX.Element | null {
+ *  vertices) so it never slices through a translucent block face. `fadeDelay` (page-load intro)
+ *  fades it on once both endpoint blocks have popped in. */
+function simpleConnector(a: LanePt, b: LanePt, color: string, kp: string, fadeDelay?: number): JSX.Element | null {
   const upper = a.y <= b.y ? a : b;
   const lower = a.y <= b.y ? b : a;
   const y0 = upper.y + upper.size * BOT_VERTEX;
@@ -141,6 +164,8 @@ function simpleConnector(a: LanePt, b: LanePt, color: string, kp: string): JSX.E
   return (
     <line
       key={kp}
+      className={fadeDelay != null ? 'fw-chain-link' : undefined}
+      style={fadeDelay != null ? { animationDelay: `${Math.round(fadeDelay)}ms` } : undefined}
       x1={upper.x}
       y1={y0 + pad}
       x2={lower.x}
@@ -153,7 +178,9 @@ function simpleConnector(a: LanePt, b: LanePt, color: string, kp: string): JSX.E
 }
 
 /** Draw a lane's connectors: the full interlocking chain only on the two gaps touching the focused
- *  block; the simpler tether everywhere else. */
+ *  block; the simpler tether everywhere else. During the page-load intro (`intro` set) the focus
+ *  gaps build link-by-link away from the clamped block and every tether fades on once both of its
+ *  endpoint blocks have popped in. */
 function laneConnectors(
   pts: LanePt[],
   full: string,
@@ -161,6 +188,7 @@ function laneConnectors(
   kp: string,
   focusH: number,
   matH: number | null,
+  intro?: { delayFor: (h: number) => number },
 ): JSX.Element[] {
   const els: JSX.Element[] = [];
   for (let i = 0; i < pts.length - 1; i++) {
@@ -171,9 +199,18 @@ function laneConnectors(
     const k = `${kp}${a.h}_${b.h}`;
     if (a.h === focusH || b.h === focusH) {
       // The newer (upper) endpoint being the materializing tip => its downward chain builds on.
-      els.push(...chainSegment(a, b, full, k, b.h === matH));
+      const build: ChainBuild | undefined =
+        b.h === matH
+          ? { t0: 0, ms: CHAIN_BUILD_MS, topDown: false }
+          : intro
+            ? { t0: INTRO_CHAIN_T0, ms: INTRO_CHAIN_MS, topDown: b.h === focusH }
+            : undefined;
+      els.push(...chainSegment(a, b, full, k, build));
     } else {
-      const c = simpleConnector(a, b, faint, k);
+      const c = simpleConnector(
+        a, b, faint, k,
+        intro ? Math.max(intro.delayFor(a.h), intro.delayFor(b.h)) + 140 : undefined,
+      );
       if (c) els.push(c);
     }
   }
@@ -233,12 +270,21 @@ export function IsometricChain() {
   const [materializeHeight, setMaterializeHeight] = useState<number | null>(null);
   const prevTip = useRef<number | null>(null);
   const matTimer = useRef<number | null>(null);
+  // Read by the tip effect below without making it a dependency (see the suppression note there).
+  const introPhaseRef = useRef<'pending' | 'run' | 'done'>('pending');
   useEffect(() => {
     const t = tipHeight;
     const prev = prevTip.current;
     prevTip.current = t;
     if (t == null || prev == null || t <= prev) return;
     if (atTip) setTarget(t, true);
+    // A block landing during the page-load intro must NOT also start the new-block spawn. The two
+    // are different animations for different events, and on a live chain they used to collide: the
+    // load would clamp a block in while a cube-rain spawn ran on the block above it, which is what
+    // made mainnet look like the intro "got interrupted". A frozen-tip chain (regtest with a dead
+    // miner) never hit this, which is why it only ever showed up on mainnet. The intro owns the
+    // stage until it finishes; spawns resume normally after it.
+    if (introPhaseRef.current !== 'done') return;
     setMaterializeHeight(t);
     if (matTimer.current != null) window.clearTimeout(matTimer.current);
     matTimer.current = window.setTimeout(() => setMaterializeHeight(null), 3200);
@@ -250,6 +296,63 @@ export function IsometricChain() {
     [],
   );
 
+  // -------- Page-load intro (one-shot) --------
+  // 'pending': data not ready yet — the chain stays behind the "Building the chain…" curtain.
+  // 'run': the intro choreography is playing (clamp-in + link draw + pop cascade).
+  // 'done': classes dropped; everything after this (scroll, new blocks) animates as usual.
+  const [introPhase, setIntroPhase] = useState<'pending' | 'run' | 'done'>('pending');
+  const [introH, setIntroH] = useState<number | null>(null);
+  introPhaseRef.current = introPhase;
+  // Which block the intro will clamp in, and whether its data has arrived. `introReady` is a
+  // BOOLEAN dependency on purpose: depending on `blocksByHeight` itself restarted the fallback
+  // timer on every range chunk that landed, so on a slow load (mainnet over the LAN through nginx,
+  // a ~32k-height window, real block payloads arriving in several chunks) the intro's start kept
+  // sliding instead of firing once. A boolean flips false→true exactly once. Regtest over
+  // localhost received all its chunks in one burst and so never exposed the thrash.
+  const introWantH =
+    tipHeight != null && pruneFloor != null
+      ? clamp(initialFocus ?? tipHeight, pruneFloor, tipHeight)
+      : null;
+  const introReady = introWantH != null && blocksByHeight.has(introWantH);
+  useEffect(() => {
+    if (introPhase !== 'pending') return;
+    if (!initialized || introWantH == null) return;
+    if (reducedMotion) {
+      setIntroPhase('done');
+      return;
+    }
+    const begin = () => {
+      setIntroH(introWantH);
+      setIntroPhase('run');
+    };
+    // Hold the curtain until the focused block's data is in (its clamp-in needs the real cube),
+    // but never longer than INTRO_DATA_WAIT_MS.
+    if (introReady) {
+      begin();
+      return;
+    }
+    const t = window.setTimeout(begin, INTRO_DATA_WAIT_MS);
+    return () => window.clearTimeout(t);
+  }, [introPhase, initialized, introWantH, introReady, reducedMotion]);
+  useEffect(() => {
+    if (introPhase !== 'run') return;
+    const t = window.setTimeout(() => setIntroPhase('done'), INTRO_TOTAL_MS);
+    return () => window.clearTimeout(t);
+  }, [introPhase]);
+  const introRun = introPhase === 'run';
+  // Pop delay per block: a cascade that starts at the clamped block's neighbour and accelerates
+  // geometrically into the distance, so "one after another" reads clearly up close without the far
+  // tunnel taking all day.
+  const introDelayFor = useCallback(
+    (h: number) => {
+      const dist = Math.abs(h - (introH ?? 0));
+      return dist <= 1
+        ? INTRO_POP_T0
+        : Math.round(INTRO_POP_T0 + INTRO_POP_SPREAD * (1 - INTRO_POP_DECAY ** (dist - 1)));
+    },
+    [introH],
+  );
+
   // -------- Focus-pop: stretch the REST of the chain away from the block that just landed --------
   const focusedHeight = Math.round(focusHeight);
   const [popHeight, setPopHeight] = useState<number | null>(null);
@@ -259,10 +362,11 @@ export function IsometricChain() {
     if (focusedHeight === prevFocused.current) return;
     prevFocused.current = focusedHeight;
     if (reducedMotion) return;
+    if (introPhase !== 'done') return; // the load intro owns the stage; no stretch under it
     setPopHeight(focusedHeight);
     if (popTimer.current != null) window.clearTimeout(popTimer.current);
     popTimer.current = window.setTimeout(() => setPopHeight(null), 380);
-  }, [focusedHeight, reducedMotion]);
+  }, [focusedHeight, reducedMotion, introPhase]);
   useEffect(
     () => () => {
       if (popTimer.current != null) window.clearTimeout(popTimer.current);
@@ -493,6 +597,9 @@ export function IsometricChain() {
   const bigNum = Math.round(focusHeight);
   const flyAmt = clamp((zoom - 1) / 1.3, 0, 1);
   const notReady = !initialized || tipHeight == null || pruneFloor == null;
+  // Keep the curtain up while the intro is still pending, so the chain's first appearance IS the
+  // intro (no flash of pulsing loading-cubes before the choreography starts).
+  const chainVisible = !notReady && introPhase !== 'pending';
 
   // Knots-tip snap: the minority lane crawls, so its head is usually far below the Core tip and
   // scrolls off-screen while following the race. When that head is off either viewport edge, pin a
@@ -523,7 +630,7 @@ export function IsometricChain() {
     <div className="relative flex min-h-0 flex-1">
       {/* Left rail: the current epoch zoomed — signaling tally, per-block signal markers, and a
           seek scoped to this epoch. Same width as the right rail, which centres the chain. */}
-      {!notReady && state && (
+      {chainVisible && state && (
         <EpochRail
           tip={tip}
           dataFloor={floor}
@@ -555,7 +662,7 @@ export function IsometricChain() {
         role="application"
         aria-label="Isometric block chain"
       >
-        {notReady && (
+        {!chainVisible && (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="text-sm text-zinc-500">
               {state ? 'Building the chain…' : 'Connecting to nodes…'}
@@ -564,23 +671,23 @@ export function IsometricChain() {
         )}
 
         {/* connector: faint base line + a real chain of interlocking links */}
-        {nodes.length > 0 && (
+        {chainVisible && nodes.length > 0 && (
           <svg
             className="pointer-events-none absolute inset-0"
             width={W}
             height={H}
             style={{ overflow: 'visible', zIndex: 2400 }}
           >
-            {laneConnectors(spineArr, connectorColors.standard[0], connectorColors.standard[1], 's', focusInt, materializeHeight)}
-            {laneConnectors(coreArr, connectorColors.standard[0], connectorColors.standard[1], 'c', focusInt, materializeHeight)}
-            {laneConnectors(knotsArr, connectorColors.orphan[0], connectorColors.orphan[1], 'k', focusInt, materializeHeight)}
-            {junctionCore.length === 2 && chainSegment(junctionCore[0], junctionCore[1], connectorColors.standardJunction, 'jc')}
-            {junctionKnots.length === 2 && chainSegment(junctionKnots[0], junctionKnots[1], connectorColors.orphanJunction, 'jk')}
+            {laneConnectors(spineArr, connectorColors.standard[0], connectorColors.standard[1], 's', focusInt, materializeHeight, introRun ? { delayFor: introDelayFor } : undefined)}
+            {laneConnectors(coreArr, connectorColors.standard[0], connectorColors.standard[1], 'c', focusInt, materializeHeight, introRun ? { delayFor: introDelayFor } : undefined)}
+            {laneConnectors(knotsArr, connectorColors.orphan[0], connectorColors.orphan[1], 'k', focusInt, materializeHeight, introRun ? { delayFor: introDelayFor } : undefined)}
+            {junctionCore.length === 2 && chainSegment(junctionCore[0], junctionCore[1], connectorColors.standardJunction, 'jc', introRun ? { t0: INTRO_CHAIN_T0, ms: INTRO_CHAIN_MS, topDown: false } : undefined)}
+            {junctionKnots.length === 2 && chainSegment(junctionKnots[0], junctionKnots[1], connectorColors.orphanJunction, 'jk', introRun ? { t0: INTRO_CHAIN_T0, ms: INTRO_CHAIN_MS, topDown: false } : undefined)}
           </svg>
         )}
 
         {/* blocks */}
-        {nodes.map((n) => {
+        {chainVisible && nodes.map((n) => {
           // Recoil = signed distance from the just-landed focus, capped and damped by the block's own
           // fisheye size. Higher-height blocks (above, smaller screen-y) push up; lower ones push down.
           let stretchDy = 0;
@@ -589,11 +696,33 @@ export function IsometricChain() {
             const mag = Math.min(Math.abs(dd), STRETCH_CAP) * STRETCH_UNIT * Math.min(1, n.size / MAX_SIZE);
             stretchDy = -Math.sign(dd) * mag;
           }
+          // Page-load intro: the anchor block clamps in (base draw + panels, no rain); a live spawn
+          // keeps its full sequence; every other block pops in on its cascade delay.
+          // The clamp stays on `introH` for the whole intro and is never re-pointed at another
+          // height. Letting it follow the tip meant a late tip correction moved it mid-flight, and
+          // since the base diamond is drawn inside the block being clamped, moving it drew a second
+          // base — the "draw base, bounce, redraw base" stutter. The anchor is correct from the
+          // start now that bootstrap reads an uncached tip, so there is nothing to chase.
+          const mat: false | 'spawn' | 'intro' = n.materialize
+            ? 'spawn'
+            : introRun && n.height === introH
+              ? 'intro'
+              : false;
+          // The intro's own anchor never pops: if the clamp moved off it (a block landed mid-intro)
+          // it has already been on screen building itself, and popping it then would read as the
+          // block restarting.
+          const introPop = introRun && !mat && n.height !== introH;
           return (
           <div
             key={n.key}
-            className="absolute"
-            style={{ left: n.x, top: n.y, transform: 'translate(-50%, -50%)', zIndex: n.z }}
+            className={clsx('absolute', introPop && 'fw-intro-pop')}
+            style={{
+              left: n.x,
+              top: n.y,
+              transform: 'translate(-50%, -50%)',
+              zIndex: n.z,
+              ...(introPop ? { animationDelay: `${introDelayFor(n.height)}ms` } : null),
+            }}
           >
             <IsoBlock
               height={n.height}
@@ -604,7 +733,7 @@ export function IsometricChain() {
               depth={n.depth}
               reducedMotion={reducedMotion}
               selected={selected === n.height}
-              materialize={n.materialize}
+              materialize={mat}
               stretchDy={stretchDy}
               showLabel={n.showLabel}
               onSelect={onSelect}
@@ -614,7 +743,7 @@ export function IsometricChain() {
         })}
 
         {/* single shared height label per fork row (centered between the two lanes) */}
-        {forkLabels.map((l) => (
+        {chainVisible && forkLabels.map((l) => (
           <div
             key={l.key}
             className="pointer-events-none absolute font-mono font-semibold tabular-nums text-zinc-100"
@@ -656,7 +785,7 @@ export function IsometricChain() {
         )}
 
         {/* HUD */}
-        {!notReady && (
+        {chainVisible && (
           <div className="pointer-events-none absolute right-4 top-4 flex flex-col items-end gap-1.5">
             <div className="rounded-md border border-white/10 bg-black/50 px-2.5 py-1 font-mono text-[11px] text-zinc-400 backdrop-blur">
               focus {fmtHeight(bigNum)}
@@ -680,7 +809,7 @@ export function IsometricChain() {
         )}
 
         {/* pinned jump to the off-screen Knots (minority) tip, sitting on that lane's x */}
-        {knotsTipOff && knotsTip != null && (
+        {chainVisible && knotsTipOff && knotsTip != null && (
           <button
             onClick={() => setTarget(knotsTip, true)}
             title={`Jump to orphaned-chain tip at ${fmtHeight(knotsTip)}`}
@@ -697,7 +826,7 @@ export function IsometricChain() {
 
       </div>
 
-      {!notReady && (
+      {chainVisible && (
         <ScrollRail
           tip={tip}
           floor={railFloor}

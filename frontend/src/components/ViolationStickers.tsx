@@ -203,13 +203,16 @@ interface Props {
   /** Block iso footprint (px). */
   size: number;
   animate: boolean;
+  /** When the first sticker slaps on, ms from materialize (defaults to the spawn's STICKER_AT;
+   *  the page-load intro passes a much earlier beat since it skips the cube rain). */
+  at?: number;
   reducedMotion: boolean;
 }
 
 // 2:1 isometric shear for the cube's RIGHT face: verticals stay vertical, horizontals slope up-right.
 const RIGHT_FACE_ISO = 'matrix(1, -0.5, 0, 1, 0, 0)';
 
-function ViolationStickersImpl({ rules, size, animate, reducedMotion }: Props) {
+function ViolationStickersImpl({ rules, size, animate, at, reducedMotion }: Props) {
   const known = rules.filter((r) => STICKERS[r]);
   if (known.length === 0) return null;
   const s = size * 0.27; // sticker px (pre-shear)
@@ -242,7 +245,7 @@ function ViolationStickersImpl({ rules, size, animate, reducedMotion }: Props) {
               zIndex: 100 + i,
               transform: `rotate(${rot}deg)`,
               ...(doAnim
-                ? ({ '--rot': `${rot}deg`, animationDelay: `${STICKER_AT + i * STICKER_STAGGER}ms` } as React.CSSProperties)
+                ? ({ '--rot': `${rot}deg`, animationDelay: `${(at ?? STICKER_AT) + i * STICKER_STAGGER}ms` } as React.CSSProperties)
                 : {}),
             }}
             title={STICKERS[r].label}

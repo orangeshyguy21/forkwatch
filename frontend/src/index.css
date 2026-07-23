@@ -84,6 +84,19 @@ body {
 .fw-chain-link { animation: fwChainIn 200ms ease-out both; }
 @keyframes fwChainIn { 0% { opacity: 0; } 100% { opacity: 1; } }
 
+/* ---- Page-load intro: the focused block clamps in (base draw + panel close, no cube rain — that
+   path lives in IsoBlock), the chain links draw down from it, then the rest of the visible chain
+   pops into place one block after another on staggered delays set inline. Runs once per load. ---- */
+.fw-intro-pop {
+  animation: fwIntroPop 340ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  will-change: transform, opacity;
+}
+@keyframes fwIntroPop {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.4); }
+  60%  { opacity: 1; }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
 /* Spawn phase 5 (last): violation stickers slap onto the block after the panels lock. Each drops in
    big + over-tilted and stamps down to its resting tilt (--rot) with a springy overshoot. */
 .fw-sticker { animation: fwSticker 420ms cubic-bezier(0.34, 1.7, 0.45, 1) both; }
@@ -126,6 +139,7 @@ body {
   .fw-chain-link,
   .fw-sticker,
   .fw-chain-stretch,
+  .fw-intro-pop,
   .fw-hero-in {
     animation: none !important;
   }

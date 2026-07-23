@@ -3,16 +3,26 @@ import type { BlocksPage, BlocksRange, ChainState, Side, ViolationsResponse } fr
 
 const API_BASE = '/api';
 
-async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(url, { signal, headers: { Accept: 'application/json' } });
+// `fresh` bypasses the BROWSER's HTTP cache for this one request. The data endpoints ship
+// `max-age` (and `stale-while-revalidate` on /api/state) so that repeated polling is absorbed by
+// the cache instead of hitting the origin — which is right for polling, but wrong for the single
+// request a page load bootstraps from: a reload inside that window was served the PREVIOUS tip and
+// the whole view then anchored one block behind before being corrected. Only the bootstrap opts
+// out, so it costs one uncached request per page load and leaves the polling path fully cached.
+async function getJson<T>(url: string, signal?: AbortSignal, fresh = false): Promise<T> {
+  const res = await fetch(url, {
+    signal,
+    headers: { Accept: 'application/json' },
+    ...(fresh ? { cache: 'no-store' as RequestCache } : null),
+  });
   if (!res.ok) {
     throw new Error(`Request failed ${res.status} for ${url}`);
   }
   return (await res.json()) as T;
 }
 
-export function fetchState(signal?: AbortSignal): Promise<ChainState> {
-  return getJson<ChainState>(`${API_BASE}/state`, signal);
+export function fetchState(signal?: AbortSignal, fresh = false): Promise<ChainState> {
+  return getJson<ChainState>(`${API_BASE}/state`, signal, fresh);
 }
 
 // Newest `limit` blocks, tip-first. The endpoint also supports a `before` cursor for paging
@@ -29,12 +39,13 @@ export function fetchBlocksRange(
   to: number,
   chain?: Side,
   signal?: AbortSignal,
+  fresh = false,
 ): Promise<BlocksRange> {
   const params = new URLSearchParams();
   params.set('from', String(Math.max(0, Math.floor(from))));
   params.set('to', String(Math.max(0, Math.floor(to))));
   if (chain) params.set('chain', chain);
-  return getJson<BlocksRange>(`${API_BASE}/blocks/range?${params.toString()}`, signal);
+  return getJson<BlocksRange>(`${API_BASE}/blocks/range?${params.toString()}`, signal, fresh);
 }
 
 export function fetchViolations(
