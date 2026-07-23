@@ -1,0 +1,4 @@
+# Tor for Forkwars mainnet nodes — outbound SOCKS proxy for Bitcoin P2P only.
+SocksPort 0.0.0.0:9050
+DataDirectory /var/lib/tor
+Log notice stdout

@@ -1,0 +1,20 @@
+# large data — never commit
+snapshots/
+*.dat
+/core-data/
+/knots-data/
+/tor-data/
+/app-db/
+backups/
+target/
+node_modules/
+.env
+
+# build output
+frontend/dist/
+
+# local noise
+*.log
+.DS_Store
+.idea/
+.vscode/

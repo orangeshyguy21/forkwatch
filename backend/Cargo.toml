@@ -1,0 +1,24 @@
+[package]
+name = "forkwars-backend"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "forkwars-backend"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.7", features = ["ws"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.5", features = ["fs", "cors"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+bitcoin = "0.32"
+base64 = "0.22"
+hex = "0.4"
+anyhow = "1"
+
+[profile.release]
+opt-level = 2
