@@ -27,6 +27,36 @@ export const STACK = 1.35;
  *  on each lane have a clear channel between them. */
 export const LANE_GAP = 225;
 
+// --- Responsive scaling ------------------------------------------------------------------------
+// The scene above is tuned for a wide desktop chain viewport. On a narrow viewport (phone/tablet)
+// the focused block and — worse — the two fork lanes at ±LANE_GAP overflow the screen. Rather than
+// re-tune every constant per device, the component multiplies its projected geometry (block size,
+// tunnel spacing, focus lift, lane gap) by a single width-derived scale. At/above FULL_SCALE_WIDTH
+// the scale is exactly 1, so the desktop render is bit-for-bit unchanged.
+
+/** Chain-viewport width (px) at/above which the scene renders at full desktop size (scale = 1). Set
+ *  so that a typical desktop (≥ ~1168px window, i.e. ≥ 760px of chain after the two 204px rails) is
+ *  byte-identical to the pre-responsive render; the 1440px design target sits comfortably above it.
+ *  Narrower desktops — where a fork's two lanes previously overflowed into the rails — scale down. */
+export const FULL_SCALE_WIDTH = 760;
+/** Floor on the scale, so a very small phone still shows a legible block rather than a speck. */
+export const MIN_SCALE = 0.46;
+/** Chain-viewport width at which the scale bottoms out at MIN_SCALE. */
+const MIN_SCALE_WIDTH = 340;
+
+/** Uniform scale for the isometric scene given the chain-viewport width. 1 on desktop. */
+export function viewportScale(w: number): number {
+  if (w >= FULL_SCALE_WIDTH) return 1;
+  const t = clamp((w - MIN_SCALE_WIDTH) / (FULL_SCALE_WIDTH - MIN_SCALE_WIDTH), 0, 1);
+  return MIN_SCALE + t * (1 - MIN_SCALE);
+}
+
+/** Fork-lane half-separation for a chain of width `w` at the given scale. Scales with the scene but
+ *  is also capped to a fraction of the viewport so the two lanes always keep a channel on-screen. */
+export function laneGapFor(w: number, scale: number): number {
+  return Math.min(LANE_GAP * scale, w * 0.34);
+}
+
 /** Chain-link size (px, CONSTANT — links never fisheye). */
 export const LINK_RX = 4.5;
 export const LINK_RY = 7.5;

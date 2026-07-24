@@ -1,6 +1,7 @@
 import { useMemo, useRef } from 'react';
 import { estimateEta, estimateRate } from '../eta';
 import type { EtaEstimate, PacingModel, RateEstimate } from '../eta';
+import { useBreakpoint } from '../hooks/useBreakpoint';
 import { useNow } from '../hooks/useNow';
 import { useStore } from '../store';
 import type { ChainState, NodeInfo, Side } from '../types';
@@ -150,31 +151,36 @@ function NodeFlank({
   side,
   cls,
   delta,
+  compact,
 }: {
   node: NodeInfo;
   side: Side;
   cls: string;
   delta?: string;
+  /** Phone/tablet size: narrower column, smaller height, client string dropped. */
+  compact?: boolean;
 }) {
   const stance = side === 'knots' ? 'SIGNALING' : 'NON-SIGNALING';
   return (
     <div
       data-side={side}
       className={clsx(
-        'flex w-44 shrink-0 flex-col leading-tight',
+        'flex shrink-0 flex-col leading-tight',
+        compact ? 'w-24' : 'w-44',
         side === 'core' ? 'items-end text-right' : 'items-start text-left',
       )}
       title={node.version}
     >
       <div
         className={clsx(
-          'text-[10px] font-bold uppercase tracking-wider',
+          'font-bold uppercase tracking-wider',
+          compact ? 'text-[9px]' : 'text-[10px]',
           !node.online ? 'text-red-400' : side === 'knots' ? 'text-emerald-300' : 'text-zinc-400',
         )}
       >
         {node.online ? stance : 'OFFLINE'}
       </div>
-      <div className={clsx('font-mono text-2xl font-extrabold tabular-nums', cls)}>
+      <div className={clsx('font-mono font-extrabold tabular-nums', compact ? 'text-lg' : 'text-2xl', cls)}>
         {side === 'knots' && delta && (
           <span className="mr-1 align-super text-xs font-extrabold">{delta}</span>
         )}
@@ -183,7 +189,7 @@ function NodeFlank({
           <span className="ml-1 align-super text-xs font-extrabold">{delta}</span>
         )}
       </div>
-      <div className="text-[9px] text-zinc-600">{node.version}</div>
+      {!compact && <div className="text-[9px] text-zinc-600">{node.version}</div>}
     </div>
   );
 }
@@ -284,8 +290,10 @@ function useHero(state: ChainState | null): Hero | null {
       kind: 'status',
       tone: 'sky',
       value: 'SYNCING',
-      eyebrow: 'Nodes catching up',
-      caption: `non-signaling #${fmtHeight(state.core?.blocks)} · signaling #${fmtHeight(state.knots?.blocks)} — one node behind, not a split`,
+      eyebrow: 'One node catching up',
+      // No caption: the two flanks carry the heights, the behind one wears the sky −N delta, and the
+      // race rail draws the gap. The old sentence restated all three as a wall of text under the hero.
+      caption: '',
     };
   }
 
@@ -345,11 +353,11 @@ function useHero(state: ChainState | null): Hero | null {
   };
 }
 
-function HeroBlock({ hero }: { hero: Hero }) {
+function HeroBlock({ hero, compact }: { hero: Hero; compact?: boolean }) {
   const tone = TONE[hero.tone];
 
   return (
-    <div className="py-1.5 text-center">
+    <div className={clsx('text-center', compact ? 'py-0.5' : 'py-1.5')}>
       <div className={clsx('text-[10px] font-bold uppercase tracking-[0.25em]', tone.dim)}>
         {hero.eyebrow}
       </div>
@@ -357,7 +365,7 @@ function HeroBlock({ hero }: { hero: Hero }) {
       {hero.kind === 'countdown' ? (
         // Both faces are mounted in the same grid cell so the swap at the retirement mark is a true
         // cross-fade rather than a jump. The clock keeps ticking underneath while faded out.
-        <div className="mt-2 grid justify-items-center">
+        <div className={clsx('grid justify-items-center', compact ? 'mt-1' : 'mt-2')}>
           <div
             className={clsx(
               'col-start-1 row-start-1 transition-opacity duration-700',
@@ -365,7 +373,7 @@ function HeroBlock({ hero }: { hero: Hero }) {
             )}
             aria-hidden={hero.face !== 'clock'}
           >
-            <SegmentClock seconds={hero.seconds ?? 0} className={tone.text} />
+            <SegmentClock seconds={hero.seconds ?? 0} className={tone.text} compact={compact} />
           </div>
           <div
             className={clsx(
@@ -378,6 +386,7 @@ function HeroBlock({ hero }: { hero: Hero }) {
               value={hero.blocks}
               label={hero.blocks === 1 ? 'block' : 'blocks'}
               className={tone.text}
+              compact={compact}
             />
           </div>
         </div>
@@ -386,20 +395,24 @@ function HeroBlock({ hero }: { hero: Hero }) {
         // colour, separated by a single red bar — the tear itself, in the clock's own language.
         <div
           key={hero.pulse}
-          className="fw-hero-in mt-2 flex items-start justify-center gap-7 sm:gap-9"
+          className={clsx(
+            'fw-hero-in flex items-start justify-center',
+            compact ? 'mt-1 gap-3' : 'mt-2 gap-7 sm:gap-9',
+          )}
         >
-          <SegmentNumber value={hero.split.core} label="non-signaling" plus className="text-cyan-300" />
-          <SegmentBar className="text-red-400" />
-          <SegmentNumber value={hero.split.knots} label="signaling" plus className="text-slate-300" />
+          <SegmentNumber value={hero.split.core} label="non-signaling" plus className="text-cyan-300" compact={compact} />
+          <SegmentBar className="text-red-400" compact={compact} />
+          <SegmentNumber value={hero.split.knots} label="signaling" plus className="text-slate-300" compact={compact} />
         </div>
       ) : (
         <div
           key={hero.pulse}
-          className="fw-hero-in mt-1.5 flex items-baseline justify-center gap-2 leading-none"
+          className={clsx('fw-hero-in flex items-baseline justify-center gap-2 leading-none', compact ? 'mt-1' : 'mt-1.5')}
         >
           <span
             className={clsx(
-              'font-mono text-4xl font-black tracking-tight sm:text-5xl',
+              'font-mono font-black tracking-tight',
+              compact ? 'text-3xl' : 'text-4xl sm:text-5xl',
               tone.text,
               'drop-shadow-[0_0_24px_currentColor]',
             )}
@@ -409,7 +422,7 @@ function HeroBlock({ hero }: { hero: Hero }) {
         </div>
       )}
 
-      {hero.caption && <div className="mt-2 text-[11px] text-zinc-500">{hero.caption}</div>}
+      {hero.caption && <div className={clsx('text-zinc-500', compact ? 'mt-1 text-[10px]' : 'mt-2 text-[11px]')}>{hero.caption}</div>}
     </div>
   );
 }
@@ -421,6 +434,9 @@ interface Props {
 
 export function Header({ state, error }: Props) {
   const hero = useHero(state);
+  const bp = useBreakpoint();
+  const isDesktop = bp === 'desktop';
+  const isPhone = bp === 'phone';
 
   if (!state || !hero) {
     return (
@@ -441,6 +457,44 @@ export function Header({ state, error }: Props) {
   }
 
   const fp = flankProps(state);
+
+  // Below desktop the wordmark and GitHub mark move OUT of their absolute pins (where they overlap
+  // the widened hero on a narrow screen) and into a real top row. Phone stacks the hero over the two
+  // flanks; tablet keeps the flanks-around-hero row, just at the compact size.
+  if (!isDesktop) {
+    return (
+      <header className="sticky top-0 z-30 border-b border-white/10 bg-black/70 px-4 py-2 backdrop-blur">
+        <div className="flex items-center justify-between">
+          <Brand />
+          <GithubLink />
+        </div>
+
+        {isPhone ? (
+          <>
+            <HeroBlock hero={hero} compact />
+            <div className="mt-1 flex items-start justify-center gap-6">
+              <NodeFlank node={state.core} side="core" cls={fp.core.cls} delta={fp.core.delta} compact />
+              <NodeFlank node={state.knots} side="knots" cls={fp.knots.cls} delta={fp.knots.delta} compact />
+            </div>
+          </>
+        ) : (
+          <div className="mt-1 flex flex-wrap items-center justify-center gap-x-5 gap-y-1">
+            <NodeFlank node={state.core} side="core" cls={fp.core.cls} delta={fp.core.delta} compact />
+            <HeroBlock hero={hero} compact />
+            <NodeFlank node={state.knots} side="knots" cls={fp.knots.cls} delta={fp.knots.delta} compact />
+          </div>
+        )}
+
+        <RaceRail state={state} />
+
+        {error && (
+          <div className="mt-1 text-center text-[10px] text-amber-400/80">
+            Live update issue: {error} — retrying…
+          </div>
+        )}
+      </header>
+    );
+  }
 
   return (
     <header className="sticky top-0 z-30 border-b border-white/10 bg-black/70 backdrop-blur">

@@ -3,7 +3,7 @@ import { fetchViolations } from '../api';
 import {
   ANCHOR,
   connectorColors,
-  LANE_GAP,
+  laneGapFor,
   LINK_RX,
   LINK_RY,
   LINK_STEP,
@@ -16,11 +16,15 @@ import {
   MAX_SIZE,
   posP,
   sizeFor,
+  STACK,
+  viewportScale,
 } from '../iso';
+import { useBreakpoint } from '../hooks/useBreakpoint';
 import { useScrollFocus } from '../hooks/useScrollFocus';
 import { useStore } from '../store';
 import type { Block, ViolationsResponse } from '../types';
 import { cleanCoinbaseTag, clsx, fmtHeight, formatBytes, formatInt, relativeTime, shortHash } from '../util';
+import { BottomScrubber } from './BottomScrubber';
 import { EpochRail } from './EpochRail';
 import { IsoBlock } from './IsoBlock';
 import { ScrollRail } from './ScrollRail';
@@ -240,6 +244,11 @@ export function IsometricChain() {
   const fetchKnotsRange = useStore((s) => s.fetchKnotsRange);
 
   const reducedMotion = usePrefersReducedMotion();
+  const bp = useBreakpoint();
+  const isDesktop = bp === 'desktop';
+  const isPhone = bp === 'phone';
+  // Non-desktop: the epoch rail is hoisted out of the flow into an on-demand overlay, toggled here.
+  const [epochOpen, setEpochOpen] = useState(false);
 
   const initialFocus = useMemo<number | null>(() => {
     const p = new URLSearchParams(window.location.search).get('focus');
@@ -248,15 +257,21 @@ export function IsometricChain() {
     return Number.isFinite(n) ? n : null;
   }, []);
 
+  // Measure the chain viewport. Declared before the scroller so the touch drag-sensitivity (which
+  // depends on the responsive scale, itself a function of width) can be handed to it.
+  const [dims, setDims] = useState({ w: 1200, h: 700 });
+  // Touch drag moves the chain 1:1: one block per resting inter-block gap (STACK * block size),
+  // scaled the same way the scene is, so a pan feels the same at any width.
+  const dragPxPerHeight = STACK * MAX_SIZE * viewportScale(dims.w);
+
   const { scrollRef, focusHeight, target, zoom, velocity, atTip, setTarget, nudge } = useScrollFocus({
     tipHeight,
     pruneFloor,
     reducedMotion,
     initialFocus,
+    dragPxPerHeight,
   });
 
-  // Measure the chain viewport.
-  const [dims, setDims] = useState({ w: 1200, h: 700 });
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -391,6 +406,11 @@ export function IsometricChain() {
   // Centre the chain column in the viewport. The epoch rail (left) and timeline rail (right) are
   // the same width, so the viewport centre IS the page centre — the chain lines up under the clock.
   const baseX = W * 0.5;
+  // Uniform down-scale for narrow viewports (1 on desktop, so the desktop scene is unchanged). Both
+  // the block/tunnel geometry (via `project`) and the fork lane separation ride this scale so the
+  // focused block and both lanes stay fully on-screen on a phone.
+  const scale = viewportScale(W);
+  const laneGap = laneGapFor(W, scale);
 
   // Vertical window: a bounded band of CONSECUTIVE blocks centered on the focus (stride 1). The
   // fisheye tunnel shrinks distant blocks; we cap how many we mount and cull off-screen ones below.
@@ -401,9 +421,13 @@ export function IsometricChain() {
   const project = useCallback(
     (h: number) => {
       const d = h - focusHeight;
-      return { d, y: anchorY - posP(d, zoom) - focusLift(d), size: sizeFor(d, zoom) * focusPop(d) };
+      return {
+        d,
+        y: anchorY - (posP(d, zoom) + focusLift(d)) * scale,
+        size: sizeFor(d, zoom) * focusPop(d) * scale,
+      };
     },
-    [focusHeight, anchorY, zoom],
+    [focusHeight, anchorY, zoom, scale],
   );
 
   // Opacity fade near the top/bottom viewport edges, so blocks dissolve off-screen (not crowd).
@@ -467,8 +491,8 @@ export function IsometricChain() {
       for (let h = Math.max(heightLo, forkAt + 1); h <= heightHi; h++) {
         const p = project(h);
         if (p.y < -320 || p.y > H + 320 || p.size < 2) continue;
-        add(h, baseX - LANE_GAP, p.y, p.size, blocksByHeight.get(h), 'core', p.d, 2100, false);
-        core.push({ x: baseX - LANE_GAP, y: p.y, size: p.size, h });
+        add(h, baseX - laneGap, p.y, p.size, blocksByHeight.get(h), 'core', p.d, 2100, false);
+        core.push({ x: baseX - laneGap, y: p.y, size: p.size, h });
         labels.push({ key: `L${h}`, height: h, y: p.y, focusAmt: focusAmount(p.d), depth: depthFor(p.d) * edgeFade(p.y) });
       }
       // Knots lane — from the Knots node's OWN chain (range-fetched, chain=knots), so the full
@@ -478,8 +502,8 @@ export function IsometricChain() {
       for (let hgt = Math.max(heightLo, forkAt + 1); hgt <= knotsHi; hgt++) {
         const p = project(hgt);
         if (p.y < -320 || p.y > H + 320 || p.size < 2) continue;
-        add(hgt, baseX + LANE_GAP, p.y, p.size, knotsBlocksByHeight.get(hgt), 'knots', p.d, 2100, false);
-        knots.push({ x: baseX + LANE_GAP, y: p.y, size: p.size, h: hgt });
+        add(hgt, baseX + laneGap, p.y, p.size, knotsBlocksByHeight.get(hgt), 'knots', p.d, 2100, false);
+        knots.push({ x: baseX + laneGap, y: p.y, size: p.size, h: hgt });
       }
       // Y-junction: short connectors from the shared fork block up to each lane's first block —
       // ONLY when that region is on-screen (so we never draw a long diagonal to the distant tip).
@@ -488,9 +512,9 @@ export function IsometricChain() {
       const onScreen = (y: number) => y >= -320 && y <= H + 320;
       if (forkAt >= heightLo && onScreen(pf.y) && onScreen(p1.y) && p1.size >= 6) {
         const fpPt: LanePt = { x: baseX, y: pf.y, size: pf.size, h: forkAt };
-        junctionCore = [{ x: baseX - LANE_GAP, y: p1.y, size: p1.size, h: forkAt + 1 }, fpPt];
+        junctionCore = [{ x: baseX - laneGap, y: p1.y, size: p1.size, h: forkAt + 1 }, fpPt];
         if (knotsTip != null && forkAt + 1 <= knotsTip) {
-          junctionKnots = [{ x: baseX + LANE_GAP, y: p1.y, size: p1.size, h: forkAt + 1 }, fpPt];
+          junctionKnots = [{ x: baseX + laneGap, y: p1.y, size: p1.size, h: forkAt + 1 }, fpPt];
         }
       }
     }
@@ -498,7 +522,7 @@ export function IsometricChain() {
     return { nodes: out, spineArr: spine, coreArr: core, knotsArr: knots, junctionCore, junctionKnots, forkLabels: labels };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    heightLo, heightHi, focusHeight, zoom, baseX, H, blocksByHeight, knotsBlocksByHeight, knotsTip,
+    heightLo, heightHi, focusHeight, zoom, baseX, laneGap, H, blocksByHeight, knotsBlocksByHeight, knotsTip,
     forked, forkAt, materializeHeight, project, state, tipHeight, pruneFloor, edgeFade,
   ]);
 
@@ -627,10 +651,11 @@ export function IsometricChain() {
   }, [flying]);
 
   return (
-    <div className="relative flex min-h-0 flex-1">
+    <div className={clsx('relative flex min-h-0 flex-1', isPhone && 'flex-col')}>
       {/* Left rail: the current epoch zoomed — signaling tally, per-block signal markers, and a
-          seek scoped to this epoch. Same width as the right rail, which centres the chain. */}
-      {chainVisible && state && (
+          seek scoped to this epoch. Desktop: inline column. Tablet/phone: hoisted to an on-demand
+          overlay (see below), so the chain keeps the full width. */}
+      {isDesktop && chainVisible && state && (
         <EpochRail
           tip={tip}
           dataFloor={floor}
@@ -641,27 +666,40 @@ export function IsometricChain() {
         />
       )}
 
-      {/* Details panel PUSHES the chain aside (in-flow). Its width animates 0↔DRAWER_W so the whole
-          view reflows smoothly; the inner panel keeps a fixed width and is revealed/clipped. */}
-      <div
-        className="h-full shrink-0 overflow-hidden"
-        style={{
-          width: drawerOpen ? DRAWER_W : 0,
-          transition: reducedMotion ? undefined : 'width 300ms cubic-bezier(0.22, 0.61, 0.36, 1)',
-        }}
-        aria-hidden={!drawerOpen}
-      >
-        {drawerHeight != null && (
-          <BlockDrawer height={drawerHeight} coreBlock={selCore} knotsBlock={selKnots} onClose={() => setSelected(null)} />
-        )}
-      </div>
+      {/* Desktop details panel PUSHES the chain aside (in-flow). Its width animates 0↔DRAWER_W so the
+          whole view reflows smoothly; the inner panel keeps a fixed width and is revealed/clipped.
+          Below desktop there is no width to give up, so the drawer becomes an overlay instead. */}
+      {isDesktop && (
+        <div
+          className="h-full shrink-0 overflow-hidden"
+          style={{
+            width: drawerOpen ? DRAWER_W : 0,
+            transition: reducedMotion ? undefined : 'width 300ms cubic-bezier(0.22, 0.61, 0.36, 1)',
+          }}
+          aria-hidden={!drawerOpen}
+        >
+          {drawerHeight != null && (
+            <BlockDrawer height={drawerHeight} coreBlock={selCore} knotsBlock={selKnots} onClose={() => setSelected(null)} />
+          )}
+        </div>
+      )}
       <div
         ref={scrollRef}
-        className="relative flex-1 overflow-hidden outline-none"
+        className={clsx('relative flex-1 overflow-hidden outline-none', !isDesktop && 'touch-none')}
         tabIndex={0}
         role="application"
         aria-label="Isometric block chain"
       >
+        {/* Non-desktop: chip to summon the epoch rail (top-left, opposite the HUD). */}
+        {!isDesktop && chainVisible && state && (
+          <button
+            onClick={() => setEpochOpen(true)}
+            title="Show the current difficulty epoch"
+            className="absolute left-3 top-3 z-[3100] rounded-md border border-amber-300/35 bg-amber-300/10 px-2.5 py-1 font-mono text-[11px] font-bold tabular-nums text-amber-200 backdrop-blur transition active:bg-amber-300/20"
+          >
+            ▲ epoch
+          </button>
+        )}
         {!chainVisible && (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="text-sm text-zinc-500">
@@ -693,7 +731,7 @@ export function IsometricChain() {
           let stretchDy = 0;
           if (popHeight != null && n.height !== popHeight) {
             const dd = n.height - popHeight;
-            const mag = Math.min(Math.abs(dd), STRETCH_CAP) * STRETCH_UNIT * Math.min(1, n.size / MAX_SIZE);
+            const mag = Math.min(Math.abs(dd), STRETCH_CAP) * STRETCH_UNIT * Math.min(1, n.size / (MAX_SIZE * scale));
             stretchDy = -Math.sign(dd) * mag;
           }
           // Page-load intro: the anchor block clamps in (base draw + panels, no rain); a live spawn
@@ -766,7 +804,7 @@ export function IsometricChain() {
         {flyAmt > 0.02 && !reducedMotion && (
           <div
             className="pointer-events-none absolute"
-            style={{ left: baseX + 148, top: anchorY, transform: 'translateY(-50%)' }}
+            style={{ left: baseX + 148 * scale, top: anchorY, transform: 'translateY(-50%)' }}
           >
             <div
               className="font-mono font-black tabular-nums text-white"
@@ -815,7 +853,7 @@ export function IsometricChain() {
             title={`Jump to orphaned-chain tip at ${fmtHeight(knotsTip)}`}
             className="absolute flex -translate-x-1/2 items-center gap-1.5 rounded-md border border-slate-400/40 bg-slate-500/15 px-2.5 py-1 font-mono text-[11px] font-bold tabular-nums text-slate-200 backdrop-blur transition hover:bg-slate-400/25"
             style={{
-              left: baseX + LANE_GAP,
+              left: baseX + laneGap,
               [knotsTipOff === 'below' ? 'bottom' : 'top']: 14,
               zIndex: 3200,
             }}
@@ -826,7 +864,9 @@ export function IsometricChain() {
 
       </div>
 
-      {chainVisible && (
+      {/* Right timeline rail — desktop + tablet keep the vertical rail; phone swaps it for the
+          horizontal bottom scrubber below. */}
+      {!isPhone && chainVisible && (
         <ScrollRail
           tip={tip}
           floor={railFloor}
@@ -837,6 +877,68 @@ export function IsometricChain() {
           onTip={seekTip}
           onFork={seekFork}
         />
+      )}
+      {isPhone && chainVisible && (
+        <BottomScrubber
+          tip={tip}
+          floor={railFloor}
+          dataFloor={floor}
+          focus={target}
+          forkHeight={forked ? forkAt : null}
+          onSeek={seek}
+          onTip={seekTip}
+          onFork={seekFork}
+        />
+      )}
+
+      {/* ---- Non-desktop overlays (epoch rail + block details), over the whole chain area ---- */}
+      {!isDesktop && epochOpen && chainVisible && state && (
+        <>
+          <div
+            className="absolute inset-0 z-[3400] bg-black/50 backdrop-blur-[1px]"
+            onClick={() => setEpochOpen(false)}
+          />
+          <div className="absolute inset-y-0 left-0 z-[3500] flex">
+            <EpochRail
+              tip={tip}
+              dataFloor={floor}
+              focus={target}
+              signaling={state.signaling}
+              forkHeight={forked ? forkAt : null}
+              onSeek={seek}
+            />
+            <button
+              onClick={() => setEpochOpen(false)}
+              aria-label="Close epoch panel"
+              className="m-2 h-8 shrink-0 self-start rounded-md border border-white/15 bg-black/60 px-2 font-mono text-xs text-zinc-300 backdrop-blur transition hover:text-zinc-100"
+            >
+              ✕
+            </button>
+          </div>
+        </>
+      )}
+
+      {!isDesktop && drawerOpen && drawerHeight != null && (
+        <>
+          <div
+            className={clsx('absolute inset-0 z-[3550] bg-black/50', isPhone ? '' : 'backdrop-blur-[1px]')}
+            onClick={() => setSelected(null)}
+          />
+          <div
+            className={clsx(
+              'absolute z-[3600]',
+              isPhone ? 'inset-x-0 bottom-0' : 'inset-y-0 left-0',
+            )}
+          >
+            <BlockDrawer
+              height={drawerHeight}
+              coreBlock={selCore}
+              knotsBlock={selKnots}
+              onClose={() => setSelected(null)}
+              variant={isPhone ? 'sheet' : 'panel'}
+            />
+          </div>
+        </>
       )}
     </div>
   );
@@ -851,16 +953,33 @@ function BlockDrawer({
   coreBlock,
   knotsBlock,
   onClose,
+  variant = 'panel',
 }: {
   height: number;
   coreBlock?: Block;
   knotsBlock?: Block;
   onClose: () => void;
+  /** 'panel' — the fixed-width side column (desktop push / tablet overlay). 'sheet' — a phone
+   *  bottom sheet: full width, rounded top, capped height, its section list scrolling within. */
+  variant?: 'panel' | 'sheet';
 }) {
   // Same block on both chains (below the fork, or not forked) => a single "shared" section.
   const shared = !!coreBlock && !!knotsBlock && coreBlock.hash === knotsBlock.hash;
+  const sheet = variant === 'sheet';
   return (
-    <div className="flex h-full w-80 shrink-0 flex-col border-r border-white/10 bg-black/70 backdrop-blur">
+    <div
+      className={clsx(
+        'flex shrink-0 flex-col bg-black/80 backdrop-blur',
+        sheet
+          ? 'max-h-[78vh] w-full rounded-t-2xl border-t border-white/12'
+          : 'h-full w-80 border-r border-white/10',
+      )}
+    >
+      {sheet && (
+        <div className="flex justify-center pt-2.5">
+          <span className="h-1 w-9 rounded-full bg-white/25" />
+        </div>
+      )}
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
         <div className="font-mono text-sm font-bold text-zinc-100">block {fmtHeight(height)}</div>
         <button
@@ -871,7 +990,7 @@ function BlockDrawer({
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {!coreBlock && !knotsBlock && (
           <div className="px-4 py-4 text-sm text-zinc-500">Block data still loading for this height…</div>
         )}

@@ -134,8 +134,12 @@ function Colon() {
   );
 }
 
-/** Height of the digit row itself. The unit label sits below it, outside this box. */
+/** Height of the digit row itself. The unit label sits below it, outside this box. `compact` is the
+ *  phone size — the countdown's eight digits + colons (or a split's two counters) have to fit a
+ *  ~360px viewport, where the full desktop height would overflow. */
 const ROW = 'h-14 sm:h-[4.5rem]';
+const ROW_COMPACT = 'h-9';
+const rowClass = (compact?: boolean) => (compact ? ROW_COMPACT : ROW);
 
 /**
  * Plus sign in the same chamfered-bar language as the digits — a seven-segment panel has no "+"
@@ -159,10 +163,10 @@ function PlusGlyph() {
  * itself; colour it via className (the split wears red). Inset from the digit height at both ends:
  * a full-height centred bar sits exactly where a ghost "1" would, and got read as one.
  */
-export function SegmentBar({ className }: { className?: string }) {
+export function SegmentBar({ className, compact }: { className?: string; compact?: boolean }) {
   const inset = 16;
   return (
-    <div className={clsx(ROW, GLOW, className)}>
+    <div className={clsx(rowClass(compact), GLOW, className)}>
       <svg viewBox={`0 0 20 ${H}`} className="h-full w-auto shrink-0" aria-hidden="true">
         <polygon points={vBar(10, Y_TOP + inset, Y_BOT - inset)} fill="currentColor" />
       </svg>
@@ -171,10 +175,10 @@ export function SegmentBar({ className }: { className?: string }) {
 }
 
 /** A labelled group of digits (e.g. `19` / DAYS), optionally led by a plus sign. */
-function Group({ value, label, plus }: { value: string; label: string; plus?: boolean }) {
+function Group({ value, label, plus, compact }: { value: string; label: string; plus?: boolean; compact?: boolean }) {
   return (
     <div className="flex flex-col items-center gap-2">
-      <div className={clsx('flex items-stretch gap-[3px]', ROW)}>
+      <div className={clsx('flex items-stretch gap-[3px]', rowClass(compact))}>
         {plus && <PlusGlyph />}
         {value.split('').map((c, i) => (
           <Digit key={i} char={c} />
@@ -198,16 +202,19 @@ export function SegmentNumber({
   label,
   className,
   plus,
+  compact,
 }: {
   value: number;
   label: string;
   className?: string;
   /** Lead with a chamfered plus sign — for delta counts (+10 since the split). */
   plus?: boolean;
+  /** Phone size. */
+  compact?: boolean;
 }) {
   return (
     <div className={clsx('flex items-start justify-center', GLOW, className)}>
-      <Group value={String(Math.max(0, Math.floor(value)))} label={label} plus={plus} />
+      <Group value={String(Math.max(0, Math.floor(value)))} label={label} plus={plus} compact={compact} />
     </div>
   );
 }
@@ -216,9 +223,12 @@ interface Props {
   seconds: number;
   /** Tailwind text colour class — the segments inherit it via currentColor. */
   className?: string;
+  /** Phone size. */
+  compact?: boolean;
 }
 
-export function SegmentClock({ seconds, className }: Props) {
+export function SegmentClock({ seconds, className, compact }: Props) {
+  const row = rowClass(compact);
   const s = Math.max(0, Math.floor(seconds));
   const days = Math.floor(s / 86400);
   const hrs = Math.floor((s % 86400) / 3600);
@@ -229,25 +239,26 @@ export function SegmentClock({ seconds, className }: Props) {
   return (
     <div
       className={clsx(
-        'flex items-start justify-center gap-2 sm:gap-3',
+        'flex items-start justify-center',
+        compact ? 'gap-1.5' : 'gap-2 sm:gap-3',
         GLOW,
         className,
       )}
     >
       {/* Days grow past two digits on a long countdown; hours/minutes/seconds never do. */}
-      <Group value={days > 99 ? String(days) : p(days)} label="days" />
-      <div className={ROW}>
+      <Group value={days > 99 ? String(days) : p(days)} label="days" compact={compact} />
+      <div className={row}>
         <Colon />
       </div>
-      <Group value={p(hrs)} label="hrs" />
-      <div className={ROW}>
+      <Group value={p(hrs)} label="hrs" compact={compact} />
+      <div className={row}>
         <Colon />
       </div>
-      <Group value={p(mins)} label="min" />
-      <div className={ROW}>
+      <Group value={p(mins)} label="min" compact={compact} />
+      <div className={row}>
         <Colon />
       </div>
-      <Group value={p(secs)} label="sec" />
+      <Group value={p(secs)} label="sec" compact={compact} />
     </div>
   );
 }

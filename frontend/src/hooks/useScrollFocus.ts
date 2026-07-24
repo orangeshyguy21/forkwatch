@@ -41,6 +41,9 @@ interface Params {
   reducedMotion: boolean;
   /** Initial focus height; null means "start at tip". Applied once. */
   initialFocus: number | null;
+  /** Finger-travel (px) per one block height, for touch drag-to-pan — roughly the on-screen gap
+   *  between adjacent blocks at rest, so a drag moves the chain 1:1 under the finger. */
+  dragPxPerHeight?: number;
 }
 
 /**
@@ -54,6 +57,7 @@ export function useScrollFocus({
   pruneFloor,
   reducedMotion,
   initialFocus,
+  dragPxPerHeight,
 }: Params): ScrollFocus {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -61,10 +65,16 @@ export function useScrollFocus({
   const floorRef = useRef<number | null>(pruneFloor);
   const reducedRef = useRef(reducedMotion);
   const initialFocusRef = useRef(initialFocus);
+  const dragPphRef = useRef(dragPxPerHeight ?? 150);
   tipRef.current = tipHeight;
   floorRef.current = pruneFloor;
   reducedRef.current = reducedMotion;
   initialFocusRef.current = initialFocus;
+  dragPphRef.current = dragPxPerHeight ?? 150;
+
+  // True while a touch/pen drag is actively panning the chain (suppresses the detent, like a live
+  // wheel). Mouse never sets it — desktop keeps wheel + click-to-select untouched.
+  const touchDragRef = useRef(false);
 
   const targetRef = useRef<number>(initialFocus ?? tipHeight ?? 0);
   const focusRef = useRef<number>(initialFocus ?? tipHeight ?? 0);
@@ -164,6 +174,85 @@ export function useScrollFocus({
     return () => el.removeEventListener('wheel', onWheel);
   }, [clampTarget]);
 
+  // Touch/pen drag-to-pan + flick momentum. The chain is dragged 1:1 under the finger; on release
+  // the recent drag velocity seeds the SAME momentum path a wheel fling uses, so friction, the
+  // snap-detent and the zoom spring all behave identically. Mouse is excluded on purpose: desktop
+  // keeps its wheel scroller and click-to-select. A short move threshold lets a tap fall through to
+  // the block it lands on (we don't capture the pointer or preventDefault until it's really a drag).
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    let active = false;
+    let pointerId = -1;
+    let startX = 0;
+    let startY = 0;
+    let lastY = 0;
+    let vel = 0; // smoothed heights/frame across recent moves
+    const THRESH = 6; // px before a press becomes a drag
+
+    const onDown = (e: PointerEvent) => {
+      if (e.pointerType === 'mouse') return;
+      if (tipRef.current == null || floorRef.current == null) return;
+      pointerId = e.pointerId;
+      startX = e.clientX;
+      startY = lastY = e.clientY;
+      active = false;
+      vel = 0;
+      // Grabbing the chain catches any in-flight fling.
+      mvelRef.current = 0;
+      accelRef.current = 1;
+    };
+    const onMove = (e: PointerEvent) => {
+      if (e.pointerId !== pointerId) return;
+      if (!active) {
+        if (Math.abs(e.clientY - startY) < THRESH && Math.abs(e.clientX - startX) < THRESH) return;
+        active = true;
+        touchDragRef.current = true;
+        interactedRef.current = true;
+        try {
+          el.setPointerCapture?.(e.pointerId);
+        } catch {
+          /* pointer already released / not capturable — panning still works via window-less events */
+        }
+      }
+      e.preventDefault();
+      const dy = e.clientY - lastY;
+      lastY = e.clientY;
+      // Finger down (dy > 0) brings higher blocks to the anchor => target rises, 1:1 under the finger.
+      const dh = dy / Math.max(40, dragPphRef.current);
+      const prev = targetRef.current;
+      targetRef.current = clampTarget(targetRef.current + dh);
+      vel += (targetRef.current - prev - vel) * 0.4;
+    };
+    const onUp = (e: PointerEvent) => {
+      if (e.pointerId !== pointerId) return;
+      pointerId = -1;
+      if (!active) return; // a tap — let the click/selection through
+      active = false;
+      touchDragRef.current = false;
+      try {
+        el.releasePointerCapture?.(e.pointerId);
+      } catch {
+        /* nothing to release */
+      }
+      if (!reducedRef.current) {
+        mvelRef.current = clamp(vel, -MAX_SCROLL_SPEED, MAX_SCROLL_SPEED);
+        settleUntilRef.current = performance.now() + SCROLL_SETTLE_MS;
+      }
+    };
+
+    el.addEventListener('pointerdown', onDown);
+    el.addEventListener('pointermove', onMove, { passive: false });
+    el.addEventListener('pointerup', onUp);
+    el.addEventListener('pointercancel', onUp);
+    return () => {
+      el.removeEventListener('pointerdown', onDown);
+      el.removeEventListener('pointermove', onMove);
+      el.removeEventListener('pointerup', onUp);
+      el.removeEventListener('pointercancel', onUp);
+    };
+  }, [clampTarget]);
+
   useEffect(() => {
     let raf = 0;
     const tick = () => {
@@ -189,8 +278,9 @@ export function useScrollFocus({
 
       // The wheel is "live" for a short window after each tick. While live the speed is only lightly
       // damped (it sustains + accumulates as you keep scrolling); once quiet it's damped hard so the
-      // flight decays and settles onto a block quickly.
-      const live = !reducedRef.current && now < settleUntilRef.current;
+      // flight decays and settles onto a block quickly. An active touch drag counts as live too, so
+      // the detent never snaps out from under the finger mid-pan.
+      const live = !reducedRef.current && (now < settleUntilRef.current || touchDragRef.current);
       const prevTarget = targetRef.current;
       if (mvelRef.current !== 0) {
         targetRef.current += mvelRef.current;

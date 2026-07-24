@@ -15,6 +15,13 @@ HERE=$(cd "$(dirname "$0")/.." && pwd)
 COMPOSE_FILE="$HERE/compose/docker-compose.regtest.yml"
 PARAMS="$HERE/compose/regtest.env"
 RUNTIME="$HERE/compose/.regtest.runtime.env"
+# The shared secrets file (compose/.env) — the ONLY place FW_RPC_PASS/FW_RPC_USER live. The nodes are
+# brought up with it, so the app/miner must see it too or their RPC auth silently mismatches the
+# nodes (getblockchaininfo -> "EOF while parsing", app shows OFFLINE / tip -1). It carries only
+# FW_-prefixed keys the regtest compose never reads, plus those two creds — and it is loaded FIRST so
+# PARAMS/RUNTIME still win any key. Optional: a fresh checkout without it falls back to the compose
+# defaults, exactly as before.
+MAIN_ENV="$HERE/compose/.env"
 
 # Build provenance for the app image (Dockerfile ARG GIT_SHA -> /health/live .commit), so a regtest
 # container can be tied to a commit the same way prod is. Dirty trees are marked.
@@ -22,7 +29,11 @@ GIT_SHA="$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 git -C "$HERE" diff --quiet HEAD 2>/dev/null || GIT_SHA="${GIT_SHA}-dirty"
 export GIT_SHA
 
-dc() { docker compose --env-file "$PARAMS" --env-file "$RUNTIME" -f "$COMPOSE_FILE" "$@"; }
+dc() {
+  local main_env=()
+  [ -f "$MAIN_ENV" ] && main_env=(--env-file "$MAIN_ENV")
+  docker compose "${main_env[@]}" --env-file "$PARAMS" --env-file "$RUNTIME" -f "$COMPOSE_FILE" "$@"
+}
 C()  { docker exec fw-core  bitcoin-cli -datadir=/data "$@"; }
 K()  { docker exec fw-knots bitcoin-cli -datadir=/data "$@"; }
 

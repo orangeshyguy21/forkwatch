@@ -640,7 +640,14 @@ fn build_state_json(
     let have_both = !core.bestblockhash.is_empty() && !knots.bestblockhash.is_empty();
     let split = have_both && lca >= 0 && lca < core_tip_h && lca < knots_tip_h;
     let rejected = have_both && !agreed && !split && knots_rejects_core;
-    let syncing = have_both && !agreed && !split && !rejected;
+    // A one-block height difference is almost always just propagation, not a lagging node: the two
+    // nodes hear each new block independently (over Tor on mainnet), so for a few seconds after
+    // EVERY block one sits a block ahead of the other. Reporting that as "syncing" flipped the header
+    // out of its countdown on every single block and stamped over the new-block moment. Require the
+    // gap to be at least two blocks before calling it a real sync — a genuinely catching-up node
+    // (downtime/IBD) crosses that at once, while ordinary block-to-block propagation never does.
+    let height_gap = (core_tip_h - knots_tip_h).abs();
+    let syncing = have_both && !agreed && !split && !rejected && height_gap >= 2;
     // The fork *payload* (branch blocks, Knots' view of Core's tip) is what the chain view renders,
     // and it is meaningful as soon as the chains are irreconcilable — split or merely rejected.
     let real_fork = split || rejected;
