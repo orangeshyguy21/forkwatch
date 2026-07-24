@@ -78,11 +78,22 @@ function useHeldEta(
 /** Public source repository — the GitHub mark in the header links here. */
 const REPO_URL = 'https://github.com/orangeshyguy21/forkwatch';
 
-/** Wordmark. Lives pinned to the header's far-left edge, vertically centred over the full bar. */
+/** Brand lockup: the crest mark stacked above the FORKWATCH wordmark. Lives pinned to the header's
+ *  far-left edge on desktop, and in the top row below it. The mark is decorative (aria-hidden) —
+ *  the wordmark already names the app — and steps down one size on phones so the header stays lean. */
 function Brand() {
   return (
-    <span className="select-none text-xl font-black leading-none tracking-tight text-zinc-100 sm:text-2xl">
-      FORK<span className="text-emerald-400">WATCH</span>
+    <span className="inline-flex select-none flex-col items-center gap-1 leading-none">
+      <img
+        src="/logo.svg"
+        alt=""
+        aria-hidden="true"
+        draggable={false}
+        className="h-7 w-auto sm:h-9"
+      />
+      <span className="text-xl font-black leading-none tracking-tight text-zinc-100 sm:text-2xl">
+        FORK<span className="text-emerald-400">WATCH</span>
+      </span>
     </span>
   );
 }
