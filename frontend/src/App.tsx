@@ -13,6 +13,19 @@ export default function App() {
     void bootstrap();
   }, [bootstrap]);
 
+  // Live tab title: "Forkwatch | 143 blocks" while counting down, "| Chain split ⚡" once it hits.
+  useEffect(() => {
+    const sf = state?.scheduled_fork;
+    let suffix: string | null = null;
+    if (state?.split) {
+      suffix = 'Chain split ⚡';
+    } else if (sf && !sf.reached) {
+      const n = sf.blocks_until;
+      suffix = `${n.toLocaleString()} block${n === 1 ? '' : 's'}`;
+    }
+    document.title = suffix ? `Forkwatch | ${suffix}` : 'Forkwatch';
+  }, [state?.split, state?.scheduled_fork]);
+
   useChainSocket();
 
   return (

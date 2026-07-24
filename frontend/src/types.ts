@@ -21,6 +21,8 @@ export interface Block {
   signals_110: boolean;
   rdts_verdict: RdtsVerdict;
   rdts_rule_hits: number[];
+  /** Distinct violation kinds (one sticker each on the flank), rule/severity-ordered. */
+  rdts_kinds: string[];
   miner: string | null;
   coinbase_tag: string | null;
   core_status: NodeBlockStatus;

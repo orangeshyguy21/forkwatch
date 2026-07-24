@@ -562,6 +562,10 @@ pub fn block_json(
         "signals_110": b.signals_110,
         "rdts_verdict": b.rdts_verdict,
         "rdts_rule_hits": b.rdts_rule_hits,
+        // Distinct violation kinds, in the same rule/severity order as `b.violations`. Lets the
+        // flank paint one sticker per *kind* (not just per rule) without shipping the full
+        // per-violation payload — the drawer still fetches that on demand via /violations.
+        "rdts_kinds": b.violations.iter().map(|v| v.kind.as_str()).collect::<Vec<_>>(),
         "miner": b.miner,
         "coinbase_tag": b.coinbase_tag,
         "core_status": status_of(b.height, &b.hash, cbh, ct),

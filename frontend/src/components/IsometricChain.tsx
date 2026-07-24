@@ -1110,7 +1110,7 @@ function BlockSection({ side, block }: { side: 'core' | 'knots' | 'shared'; bloc
                 className="flex items-center gap-2.5 rounded border border-amber-500/20 bg-amber-500/5 px-2.5 py-1.5"
               >
                 <div className="shrink-0">
-                  <StickerIcon rule={v.rule} size={26} />
+                  <StickerIcon kind={v.kind} size={26} />
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[11.5px] font-semibold text-amber-200">{v.kind}</div>

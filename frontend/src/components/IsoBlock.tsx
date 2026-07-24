@@ -538,9 +538,9 @@ function IsoBlockImpl({
         </g>
       </svg>
 
-      {block && block.rdts_rule_hits.length > 0 && (
+      {block && block.rdts_kinds.length > 0 && (
         <ViolationStickers
-          rules={block.rdts_rule_hits}
+          kinds={block.rdts_kinds}
           size={size}
           animate={animate}
           at={materialize === 'intro' ? INTRO_STICKER_AT : undefined}
