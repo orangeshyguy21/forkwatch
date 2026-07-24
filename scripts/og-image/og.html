@@ -1,0 +1,264 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1200px; height: 630px; overflow: hidden; }
+  body {
+    background:
+      radial-gradient(900px 520px at 12% -12%, rgba(5, 150, 105, 0.16), transparent 62%),
+      radial-gradient(820px 460px at 88% -8%, rgba(255, 255, 255, 0.055), transparent 60%),
+      radial-gradient(680px 620px at 71% 34%, rgba(28, 191, 166, 0.09), transparent 68%),
+      #050506;
+    color: #e8e8ea;
+    font-family: 'Open Sans', ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    position: relative;
+  }
+  /* Faint vignette so the chain reads against the edges */
+  .vig { position: absolute; inset: 0; background: radial-gradient(1100px 700px at 50% 45%, transparent 40%, rgba(0,0,0,0.55) 100%); }
+
+  .left { position: absolute; left: 84px; top: 178px; width: 560px; }
+
+  .lockup { display: flex; align-items: center; gap: 20px; }
+  .lockup svg { height: 92px; width: auto; display: block; }
+  .wordmark {
+    font-weight: 800;
+    font-size: 68px;
+    line-height: 0.9;
+    letter-spacing: -0.035em;
+    color: #f4f4f5;
+  }
+  .wordmark em { font-style: normal; color: #34d399; }
+
+  .tagline {
+    margin-top: 22px;
+    font-size: 19px;
+    font-weight: 700;
+    letter-spacing: 0.185em;
+    text-transform: uppercase;
+    color: #7b7b85;
+  }
+  /* No eyebrow over the clock — the tagline above already names what is being counted down to. */
+  .clockwrap { margin-top: 46px; }
+  .clock { display: flex; align-items: flex-start; gap: 14px; color: #fcd34d; filter: drop-shadow(0 0 14px currentColor); }
+  .grp { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .row { display: flex; align-items: stretch; gap: 4px; height: 84px; }
+  .row svg { height: 100%; width: auto; flex-shrink: 0; display: block; }
+  .unit { font-size: 11px; font-weight: 800; letter-spacing: 0.22em; text-transform: uppercase; color: #52525b; }
+  .colon { height: 84px; }
+
+  .chain { position: absolute; inset: 0; }
+</style>
+</head>
+<body>
+<svg class="chain" id="chain" width="1200" height="630" viewBox="0 0 1200 630"></svg>
+<div class="vig"></div>
+
+<div class="left">
+  <div class="lockup">
+    <!-- Forkwatch crest (public/logo.svg) -->
+    <svg viewBox="0 0 71.93 83.06" aria-hidden="true">
+      <polygon fill="#2fc49b" points="43.75 78.57 71.93 62.3 71.93 20.77 35.97 0 0 20.77 0 62.3 28.26 78.61 28.26 72.84 5 59.41 5 26.54 25.5 38.37 28 34.04 7.5 22.21 35.97 5.77 64.51 22.26 44.75 33.67 47.25 38 66.93 26.63 66.93 59.41 43.75 72.79 43.75 78.57"/>
+      <polygon fill="#fff" points="24.95 18.28 28.71 18.28 28.71 44.38 31.2 46.65 33.41 44.95 34.26 18.28 37.74 18.28 38.46 44.73 40.73 46.65 43.29 44.52 43.29 18.28 47.13 18.28 49.33 50.07 39.74 58.1 39.74 80.88 35.97 83.06 32.27 80.92 32.27 57.96 22.6 50 24.95 18.28"/>
+    </svg>
+    <div class="wordmark">FORK<em>WATCH</em></div>
+  </div>
+
+  <div class="tagline">Countdown to the fork</div>
+
+  <div class="clockwrap">
+    <div class="clock" id="clock"></div>
+  </div>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Seven-segment readout — geometry ported from frontend/src/components/SegmentClock.tsx
+// ---------------------------------------------------------------------------
+const SW = 64, SH = 108, PAD = 4, T = 12, GAP = 2;
+const HALF = T / 2;
+const X_LEFT = PAD + HALF, X_RIGHT = SW - PAD - HALF;
+const Y_TOP = PAD + HALF, Y_MID = SH / 2, Y_BOT = SH - PAD - HALF;
+const pts = (p) => p.map(([x, y]) => x + ',' + y).join(' ');
+const hBar = (y, x0 = X_LEFT + GAP, x1 = X_RIGHT - GAP) => pts([
+  [x0, y], [x0 + HALF, y - HALF], [x1 - HALF, y - HALF], [x1, y], [x1 - HALF, y + HALF], [x0 + HALF, y + HALF],
+]);
+const vBar = (x, y0, y1) => pts([
+  [x, y0], [x + HALF, y0 + HALF], [x + HALF, y1 - HALF], [x, y1], [x - HALF, y1 - HALF], [x - HALF, y0 + HALF],
+]);
+const SEG = {
+  a: hBar(Y_TOP),
+  b: vBar(X_RIGHT, Y_TOP + GAP, Y_MID - GAP),
+  c: vBar(X_RIGHT, Y_MID + GAP, Y_BOT - GAP),
+  d: hBar(Y_BOT),
+  e: vBar(X_LEFT, Y_MID + GAP, Y_BOT - GAP),
+  f: vBar(X_LEFT, Y_TOP + GAP, Y_MID - GAP),
+  g: hBar(Y_MID),
+};
+const DIGITS = { '0':'abcdef','1':'bc','2':'abdeg','3':'abcdg','4':'bcfg','5':'acdfg','6':'acdefg','7':'abc','8':'abcdefg','9':'abcdfg' };
+const ORDER = ['a','b','c','d','e','f','g'];
+
+function digitSvg(ch) {
+  const on = DIGITS[ch] || '';
+  const polys = ORDER.map((s) =>
+    `<polygon points="${SEG[s]}" fill="currentColor" opacity="${on.includes(s) ? 1 : 0.07}"/>`).join('');
+  return `<svg viewBox="0 0 ${SW} ${SH}">${polys}</svg>`;
+}
+function colonSvg() {
+  const C = 3;
+  const pip = (cy) => pts([
+    [-HALF + C, cy - HALF], [HALF - C, cy - HALF], [HALF, cy - HALF + C], [HALF, cy + HALF - C],
+    [HALF - C, cy + HALF], [-HALF + C, cy + HALF], [-HALF, cy + HALF - C], [-HALF, cy - HALF + C],
+  ]);
+  const span = Y_BOT - Y_TOP;
+  return `<svg viewBox="${-HALF - 1} 0 ${T + 2} ${SH}">
+    <polygon points="${pip(Y_TOP + span / 3)}" fill="currentColor"/>
+    <polygon points="${pip(Y_TOP + (2 * span) / 3)}" fill="currentColor"/>
+  </svg>`;
+}
+function group(value, unit) {
+  return `<div class="grp">
+    <div class="row">${value.split('').map(digitSvg).join('')}</div>
+    <div class="unit">${unit}</div>
+  </div>`;
+}
+// A countdown that reads as "real but not imminent" — the shape the header wears most of the time.
+document.getElementById('clock').innerHTML = [
+  group('09', 'days'),
+  `<div class="colon">${colonSvg()}</div>`,
+  group('04', 'hrs'),
+  `<div class="colon">${colonSvg()}</div>`,
+  group('37', 'min'),
+  `<div class="colon">${colonSvg()}</div>`,
+  group('12', 'sec'),
+].join('');
+
+// ---------------------------------------------------------------------------
+// Isometric chain — geometry from src/iso.ts, colours from the 'emerald-steel' colorway.
+// ---------------------------------------------------------------------------
+// The canonical / winning chain (pre-fork spine + the lane that reaches the tip).
+const C = {
+  top: '#0e3d3c', left: '#062522', right: '#093230', edge: 'rgba(52,224,206,0.62)',
+  fill: { l0: '#1cbfa6', l1: '#0c3d37', r0: '#28d6ba', r1: '#114e46', water: 'rgba(150,255,238,0.96)' },
+  link: 'rgba(52,224,206,0.62)', linkFaint: 'rgba(46,206,190,0.34)',
+};
+// The orphaned minority branch — it greys out and visually dies.
+const O = {
+  top: '#3a3a40', left: '#141416', right: '#1d1d20', edge: 'rgba(244,244,245,0.55)',
+  fill: { l0: '#6b6b76', l1: '#2c2c31', r0: '#82828d', r1: '#37373d', water: 'rgba(232,236,244,0.95)' },
+  link: 'rgba(224,224,228,0.62)', linkFaint: 'rgba(210,212,218,0.3)',
+};
+const CUBE = { top: '50,0 100,25 50,50 0,25', left: '0,25 50,50 50,116 0,91', right: '100,25 50,50 50,116 100,91' };
+const BODY_HEX = '0,25 50,50 100,25 100,91 50,116 0,91';
+const BOT_VERTEX = 0.58, TOP_FACE = 0.33, BODY_H = 66;
+// The live viewer's links are sized for a 210px block on a 1000px-tall column; scaled up here so the
+// interlocking chain still reads at thumbnail size (LINK_RX/RY/STEP × 1.7).
+const LINK_RX = 7.6, LINK_RY = 12.8, LINK_STEP = 25.5, LINK_W = 2.7;
+
+// No stickers on the card: the violation / BIP-110 artwork is a great close-up detail but at
+// thumbnail size it just crowds the split. If it is ever wanted back, the die-cut set lives in
+// frontend/src/components/ViolationStickers.tsx and ports over verbatim (viewBox 0 0 64 64).
+
+/** One iso block. (x,y) is the centre of its artwork box; `size` the iso footprint width.
+ *  `opts.pal` picks the colorway (canonical C or orphaned O). */
+function block(id, x, y, size, fillFrac, opts = {}) {
+  const P = opts.pal || C;
+  const s = size / 100;
+  const bx = x - size / 2;
+  const by = y - (size * 1.16) / 2;
+  const d = (1 - fillFrac) * BODY_H;
+  const wl = 25 + d, wlFront = 50 + d;
+  const water = `M0,${wl.toFixed(2)} L50,${wlFront.toFixed(2)} L100,${wl.toFixed(2)}`;
+  const shadow = `drop-shadow(0 ${Math.round(size * 0.06)}px ${Math.round(size * 0.09)}px rgba(0,0,0,0.6))`;
+
+  return `
+    <g transform="translate(${bx},${by}) scale(${s})" style="filter:${shadow}" opacity="${opts.opacity ?? 1}">
+      <defs>
+        <linearGradient id="t-${id}" x1="0" y1="0" x2="0.4" y2="1">
+          <stop offset="0" stop-color="${P.top}" stop-opacity="1"/>
+          <stop offset="1" stop-color="${P.top}" stop-opacity="0.82"/>
+        </linearGradient>
+        <linearGradient id="r-${id}" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="${P.right}"/>
+          <stop offset="1" stop-color="${P.right}" stop-opacity="0.7"/>
+        </linearGradient>
+        <linearGradient id="fl-${id}" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="${P.fill.l0}"/><stop offset="1" stop-color="${P.fill.l1}"/>
+        </linearGradient>
+        <linearGradient id="fr-${id}" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="${P.fill.r0}"/><stop offset="1" stop-color="${P.fill.r1}"/>
+        </linearGradient>
+        <clipPath id="body-${id}"><polygon points="${BODY_HEX}"/></clipPath>
+      </defs>
+
+      <polygon points="${CUBE.left}" fill="${P.left}" stroke="${P.edge}" stroke-width="0.8"/>
+      <polygon points="${CUBE.right}" fill="url(#r-${id})" stroke="${P.edge}" stroke-width="0.8"/>
+
+      <g clip-path="url(#body-${id})">
+        <polygon points="0,${wl} 50,${wlFront} 50,116 0,91" fill="url(#fl-${id})"/>
+        <polygon points="50,${wlFront} 100,${wl} 100,91 50,116" fill="url(#fr-${id})"/>
+        <path d="${water}" fill="none" stroke="${P.fill.water}" stroke-width="1.5" stroke-linejoin="round" style="filter:drop-shadow(0 0 3px ${P.fill.water})"/>
+        <path d="${water}" fill="none" stroke="rgba(255,255,255,0.5)" stroke-width="0.5" stroke-linejoin="round"/>
+      </g>
+
+      <polygon points="${CUBE.top}" fill="url(#t-${id})" stroke="${P.edge}" stroke-width="1"/>
+    </g>`;
+
+}
+
+/** Interlocking chain across one gap — ported from IsometricChain.chainSegment. */
+function links(upper, lower, color) {
+  const x0 = upper.x, y0 = upper.y + upper.size * BOT_VERTEX;
+  const x1 = lower.x, y1 = lower.y - lower.size * TOP_FACE;
+  const dx = x1 - x0, dy = y1 - y0;
+  if (dy < 3) return '';
+  const dist = Math.hypot(dx, dy) || 1;
+  const ang = (Math.atan2(dy, dx) * 180) / Math.PI;
+  const n = Math.max(1, Math.round(dist / LINK_STEP));
+  let out = '';
+  for (let j = 0; j < n; j++) {
+    const t = (j + 0.5) / n;
+    const cx = x0 + dx * t, cy = y0 + dy * t;
+    const narrow = j % 2 === 1;
+    out += `<ellipse cx="0" cy="0" rx="${LINK_RX}" ry="${LINK_RY}" fill="none" stroke="${color}" stroke-width="${LINK_W}"
+      transform="translate(${cx.toFixed(1)},${cy.toFixed(1)}) rotate(${(ang + 90).toFixed(1)}) scale(${narrow ? 0.4 : 1},1)"/>`;
+  }
+  return out;
+}
+
+// The split, laid out the way the viewer draws it: height grows UPWARD (y = anchor − posP(d)), so
+// the two competing tips sit at the top and the shared chain recedes downward into the tunnel,
+// shrinking with distance. The lanes diverge from the last common block at ±laneGap — Core, the
+// chain that keeps the hashrate, on the left in the brand emerald; the orphaned Knots branch on the
+// right, greyed out. Both tips are the same height, so they are the same size.
+const BASE_X = 895;
+const LANE_GAP = 142;
+const TIP_Y = 176;
+const TIP_SIZE = 186;
+
+// The Core tip: the data-heavy block that keeps the hashrate.
+const coreTip = { id: 'core', x: BASE_X - LANE_GAP, y: TIP_Y, size: TIP_SIZE, fill: 0.88 };
+// The Knots tip: the branch that rejected it, already greying out.
+const knotsTip = { id: 'knots', x: BASE_X + LANE_GAP, y: TIP_Y, size: TIP_SIZE, fill: 0.32 };
+// The fork point — the last block both nodes agree on — and the shared chain below it.
+const forkPt = { id: 'fork', x: BASE_X, y: 452, size: 158, fill: 0.66 };
+const spine = { id: 'spine', x: BASE_X, y: 636, size: 113, fill: 0.5 };
+
+// Painted back to front, and — this is the ordering that matters — each chain is drawn AFTER the
+// block it seats into. A chain segment runs from the upper block's bottom vertex down to the centre
+// of the lower block's top face, so its last links land ON that face; drawing every connector first
+// left them showing faintly THROUGH the translucent top face instead of sitting on it.
+let svg = '';
+svg += block(spine.id, spine.x, spine.y, spine.size, spine.fill, { opacity: 0.6 });
+svg += links(forkPt, spine, C.linkFaint);
+svg += block(forkPt.id, forkPt.x, forkPt.y, forkPt.size, forkPt.fill, { opacity: 0.9 });
+svg += links(coreTip, forkPt, C.link);
+svg += links(knotsTip, forkPt, O.link);
+svg += block(knotsTip.id, knotsTip.x, knotsTip.y, knotsTip.size, knotsTip.fill, { pal: O });
+svg += block(coreTip.id, coreTip.x, coreTip.y, coreTip.size, coreTip.fill);
+document.getElementById('chain').innerHTML = svg;
+</script>
+</body>
+</html>
