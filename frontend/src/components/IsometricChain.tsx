@@ -264,8 +264,27 @@ export function IsometricChain() {
   // scaled the same way the scene is, so a pan feels the same at any width.
   const dragPxPerHeight = STACK * MAX_SIZE * viewportScale(dims.w);
 
+  // The tip the CHAIN renders to, which is not always the tip the network is at. `tipHeight` is the
+  // higher of the two nodes' tips and jumps the instant EITHER node hears a block, but the spine's
+  // blocks come from Core alone. So whenever the signaling node hears a block first — half of all
+  // blocks, and for several seconds each time over Tor — the height space grew a block we hold no
+  // payload for, and the chain sprouted a data-less ghost cube. Worse, that ghost consumed the tip
+  // advance: the spawn sequence needs the real block to rain in, so it was suppressed, and by the
+  // time Core's payload landed the tip had already moved and the new-block moment was gone.
+  // Ignore that one-block lead (the backend ignores it too — see `syncing`, which needs a gap of 2):
+  // the chain rests on the last block we actually have and advances, with its full spawn, when the
+  // payload lands. A gap of 2+ is a genuinely lagging node; the header calls that syncing and the
+  // chain keeps showing the unknown heights ahead rather than hiding them. Nor during a fork: there
+  // the Knots lane draws from its OWN chain, so a Knots-led height is a block we do hold and lowering
+  // the ceiling would lop the head off that lane.
+  const forked = !!state && !state.agreed && !!state.fork;
+  const chainTip =
+    tipHeight != null && !forked && !blocksByHeight.has(tipHeight) && blocksByHeight.has(tipHeight - 1)
+      ? tipHeight - 1
+      : tipHeight;
+
   const { scrollRef, focusHeight, target, zoom, velocity, atTip, setTarget, nudge } = useScrollFocus({
-    tipHeight,
+    tipHeight: chainTip,
     pruneFloor,
     reducedMotion,
     initialFocus,
@@ -288,7 +307,7 @@ export function IsometricChain() {
   // Read by the tip effect below without making it a dependency (see the suppression note there).
   const introPhaseRef = useRef<'pending' | 'run' | 'done'>('pending');
   useEffect(() => {
-    const t = tipHeight;
+    const t = chainTip;
     const prev = prevTip.current;
     prevTip.current = t;
     if (t == null || prev == null || t <= prev) return;
@@ -303,7 +322,7 @@ export function IsometricChain() {
     setMaterializeHeight(t);
     if (matTimer.current != null) window.clearTimeout(matTimer.current);
     matTimer.current = window.setTimeout(() => setMaterializeHeight(null), 3200);
-  }, [tipHeight, atTip, setTarget]);
+  }, [chainTip, atTip, setTarget]);
   useEffect(
     () => () => {
       if (matTimer.current != null) window.clearTimeout(matTimer.current);
@@ -325,8 +344,8 @@ export function IsometricChain() {
   // sliding instead of firing once. A boolean flips false→true exactly once. Regtest over
   // localhost received all its chunks in one burst and so never exposed the thrash.
   const introWantH =
-    tipHeight != null && pruneFloor != null
-      ? clamp(initialFocus ?? tipHeight, pruneFloor, tipHeight)
+    chainTip != null && pruneFloor != null
+      ? clamp(initialFocus ?? chainTip, pruneFloor, chainTip)
       : null;
   const introReady = introWantH != null && blocksByHeight.has(introWantH);
   useEffect(() => {
@@ -389,12 +408,11 @@ export function IsometricChain() {
     [],
   );
 
-  const forked = !!state && !state.agreed && !!state.fork;
   const forkAt = state?.fork?.at_height ?? Number.POSITIVE_INFINITY;
   const knotsTip = state?.knots?.blocks ?? null; // Knots minority chain tip height
 
   const floor = pruneFloor ?? 0; // data floor: lowest height with cached block data
-  const tip = tipHeight ?? 0;
+  const tip = chainTip ?? 0;
   // Rail display floor: span the full configured window [floor_height, tip] so the epoch structure
   // renders even when the node has pruned down to a thin near-tip window. The chain view still uses
   // `floor` (data floor) for actual blocks; the rail shades [railFloor, floor) as not-yet-cached.
@@ -586,7 +604,7 @@ export function IsometricChain() {
   // first; ignored while typing in a field). ↑/↓ step one block, PgUp/PgDn ten, Home/End jump.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (tipHeight == null || pruneFloor == null) return;
+      if (chainTip == null || pruneFloor == null) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
@@ -604,7 +622,7 @@ export function IsometricChain() {
           nudge(-10);
           break;
         case 'Home':
-          setTarget(tipHeight, true);
+          setTarget(chainTip, true);
           break;
         case 'End':
           setTarget(pruneFloor, true);
@@ -616,7 +634,7 @@ export function IsometricChain() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [tipHeight, pruneFloor, nudge, setTarget]);
+  }, [chainTip, pruneFloor, nudge, setTarget]);
 
   const bigNum = Math.round(focusHeight);
   const flyAmt = clamp((zoom - 1) / 1.3, 0, 1);
@@ -1036,7 +1054,7 @@ function BlockSection({ side, block }: { side: 'core' | 'knots' | 'shared'; bloc
     side === 'shared'
       ? { label: 'In agreement', node: null, cls: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' }
       : side === 'core'
-        ? { label: 'Biggest chain', node: 'Bitcoin Core', cls: 'border-cyan-500/40 bg-cyan-500/10 text-cyan-200' }
+        ? { label: 'Biggest chain', node: 'Bitcoin Core', cls: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' }
         : { label: 'Orphaned chain', node: 'Bitcoin Knots', cls: 'border-slate-400/40 bg-slate-400/10 text-slate-300' };
 
   return (

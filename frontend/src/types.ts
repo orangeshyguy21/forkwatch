@@ -9,6 +9,20 @@ export type NodeBlockStatus =
   | 'headers-only'
   | 'absent';
 
+/**
+ * Bump on ANY change to the `Block` shape below.
+ *
+ * Settled block windows are served `Cache-Control: immutable, max-age=31536000` (see
+ * `CC_IMMUTABLE` in backend/src/main.rs) — a year, with no revalidation. That is correct for the
+ * *content* (a finalized height's block never changes) but says nothing about the *shape*: adding a
+ * field leaves every already-cached window in every visitor's browser a year behind the code that
+ * reads it. `rdts_kinds` shipped that way and every scroll into old history threw on it.
+ *
+ * The version rides the range URL as `?v=`, so a bump changes the cache key and retires the stale
+ * windows immediately instead of waiting out the TTL. The backend ignores the parameter.
+ */
+export const BLOCK_SCHEMA_VERSION = '2';
+
 export interface Block {
   height: number;
   hash: string;
@@ -21,8 +35,10 @@ export interface Block {
   signals_110: boolean;
   rdts_verdict: RdtsVerdict;
   rdts_rule_hits: number[];
-  /** Distinct violation kinds (one sticker each on the flank), rule/severity-ordered. */
-  rdts_kinds: string[];
+  /** Distinct violation kinds (one sticker each on the flank), rule/severity-ordered. Optional
+   *  because a long-lived immutable cache entry can predate the field — see
+   *  BLOCK_SCHEMA_VERSION. Read it as possibly-absent, never as a bare `.length`. */
+  rdts_kinds?: string[];
   miner: string | null;
   coinbase_tag: string | null;
   core_status: NodeBlockStatus;

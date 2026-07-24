@@ -48,7 +48,6 @@ function useHeldEta(
   blocks: number | null,
   pacing: PacingModel | null,
   targetHeight: number | null,
-  now: number,
 ): EtaSnapshot | null {
   const held = useRef<{ bucket: number; target: number | null; snap: EtaSnapshot } | null>(null);
 
@@ -68,8 +67,10 @@ function useHeldEta(
   if (!eta) return prev?.snap ?? null;
 
   // Anchor on the tip's timestamp so the countdown reflects time already elapsed since it, clamped
-  // to now because a header timestamp may legitimately sit up to two hours in the future.
-  const anchorMs = Math.min(eta.lastTime * 1000, now);
+  // to now because a header timestamp may legitimately sit up to two hours in the future. The wall
+  // clock is read here rather than taken from the ticker: this runs only at a checkpoint, and the
+  // ticker is phase-locked to the snapshot this line produces — feeding it back in would be a cycle.
+  const anchorMs = Math.min(eta.lastTime * 1000, Date.now());
   const snap: EtaSnapshot = { eta, targetMs: anchorMs + eta.seconds * 1000 };
   held.current = { bucket, target: targetHeight, snap };
   return snap;
@@ -137,9 +138,12 @@ function flankProps(state: ChainState): {
   if (state.split) {
     // Lane colours only — the "+N / +N" score is the hero's line, and repeating it here (and on
     // the rail) made the same number appear three times.
+    // Numbers track WIN/ORPHAN, matching the blocks: the biggest chain is emerald, the orphaned one
+    // greys out. Signaling identity is carried by the purple "SIGNALING" *label* (below), not the
+    // number — so whichever lane is orphaned reads grey while still being marked as signaling.
     return {
-      core: { cls: 'text-cyan-300' },
-      knots: { cls: 'text-slate-300' },
+      core: { cls: 'text-emerald-300' }, // biggest chain — matches the emerald blocks
+      knots: { cls: 'text-slate-300' }, // orphaned chain — greys out, matches its steel blocks
     };
   }
   if (state.rejected) {
@@ -186,7 +190,7 @@ function NodeFlank({
         className={clsx(
           'font-bold uppercase tracking-wider',
           compact ? 'text-[9px]' : 'text-[10px]',
-          !node.online ? 'text-red-400' : side === 'knots' ? 'text-emerald-300' : 'text-zinc-400',
+          !node.online ? 'text-red-400' : side === 'knots' ? 'text-purple-300' : 'text-zinc-400',
         )}
       >
         {node.online ? stance : 'OFFLINE'}
@@ -245,10 +249,6 @@ function useHero(state: ChainState | null): Hero | null {
   // sit inside the `sf && !sf.reached` arm where it is actually used.
   const sf = state?.scheduled_fork ?? null;
   const blocksUntil = sf && !sf.reached ? sf.blocks_until : null;
-  // Only the countdown reads the clock. With no target to count down to, a 1 Hz tick would still
-  // re-render the header, both node flanks and the race rail's whole SVG every second to draw
-  // exactly what was already on screen — so the ticker is switched off instead.
-  const now = useNow(blocksUntil != null ? 1000 : 0);
   // How many of those blocks are still mined under today's difficulty. A block's difficulty comes
   // from its epoch, and `next_retarget_height` is the first height of the next one — so the last
   // block at the current difficulty is the one below it, hence the -1.
@@ -262,7 +262,13 @@ function useHero(state: ChainState | null): Hero | null {
           targetSpacing: state.pacing.target_spacing,
         }
       : null;
-  const snapshot = useHeldEta(rate, blocksUntil, pacing, sf?.height ?? null, now);
+  const snapshot = useHeldEta(rate, blocksUntil, pacing, sf?.height ?? null);
+  // Only the countdown reads the clock. With no target to count down to, a 1 Hz tick would still
+  // re-render the header, both node flanks and the race rail's whole SVG every second to draw
+  // exactly what was already on screen — so the ticker is switched off instead. The target instant is
+  // handed over as the tick phase: the clock steps when `now` crosses it, so that is where the
+  // samples belong (see useNow).
+  const now = useNow(blocksUntil != null ? 1000 : 0, snapshot?.targetMs ?? 0);
 
   if (!state) return null;
 
@@ -411,7 +417,9 @@ function HeroBlock({ hero, compact }: { hero: Hero; compact?: boolean }) {
             compact ? 'mt-1 gap-3' : 'mt-2 gap-7 sm:gap-9',
           )}
         >
-          <SegmentNumber value={hero.split.core} label="non-signaling" plus className="text-cyan-300" compact={compact} />
+          {/* Digits track win/orphan: emerald biggest · grey orphaned. Both sub-labels stay the muted
+              default; signaling identity is carried by the purple "SIGNALING" flank label above. */}
+          <SegmentNumber value={hero.split.core} label="non-signaling" plus className="text-emerald-300" compact={compact} />
           <SegmentBar className="text-red-400" compact={compact} />
           <SegmentNumber value={hero.split.knots} label="signaling" plus className="text-slate-300" compact={compact} />
         </div>

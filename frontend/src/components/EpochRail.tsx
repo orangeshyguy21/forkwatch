@@ -12,7 +12,7 @@ import { clsx, fmtHeight, formatInt, niceStep } from '../util';
  * pixels the right rail gives ~30,000.
  *
  * That zoom is what makes per-block detail legible: every block that signals bit 4 draws as its own
- * emerald comet at its true height, so the viewer sees not just how much of the epoch signals but
+ * neon-purple comet at its true height, so the viewer sees not just how much of the epoch signals but
  * WHERE in it the signaling happened. For the LIVE epoch the headline counts come from the
  * backend's own tally (state.signaling, epoch-scoped) — authoritative even before per-block data
  * has streamed in. For a PAST epoch there is no backend tally, so the counts are made from the
@@ -199,18 +199,18 @@ export const EpochRail = memo(function EpochRail({ tip, dataFloor, focus, signal
         <div className="space-y-1">
           <div className="flex items-center justify-between gap-2">
             <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-zinc-500">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              <span className="h-1.5 w-1.5 rounded-full bg-purple-400" />
               signaling
             </span>
             <span
               className={clsx(
-                'font-mono text-[11px] font-semibold tabular-nums text-emerald-300',
+                'font-mono text-[11px] font-semibold tabular-nums text-purple-300',
                 !scanned && 'opacity-60',
               )}
               title={partialTitle}
             >
               {formatInt(signaled)}
-              <span className="ml-1.5 text-emerald-400/60">{pct.toFixed(1)}%</span>
+              <span className="ml-1.5 text-purple-400/60">{pct.toFixed(1)}%</span>
             </span>
           </div>
           <div className="flex items-center justify-between gap-2">
@@ -247,7 +247,7 @@ export const EpochRail = memo(function EpochRail({ tip, dataFloor, focus, signal
             className={clsx(
               'flex-1 rounded border px-1 py-1 text-[10px] font-bold uppercase tracking-wider transition',
               sigUp != null
-                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'
+                ? 'border-purple-500/30 bg-purple-500/10 text-purple-200 hover:bg-purple-500/20'
                 : 'cursor-default border-white/10 bg-white/[0.03] text-zinc-600',
             )}
           >
@@ -260,7 +260,7 @@ export const EpochRail = memo(function EpochRail({ tip, dataFloor, focus, signal
             className={clsx(
               'flex-1 rounded border px-1 py-1 text-[10px] font-bold uppercase tracking-wider transition',
               sigDown != null
-                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'
+                ? 'border-purple-500/30 bg-purple-500/10 text-purple-200 hover:bg-purple-500/20'
                 : 'cursor-default border-white/10 bg-white/[0.03] text-zinc-600',
             )}
           >
@@ -293,7 +293,7 @@ export const EpochRail = memo(function EpochRail({ tip, dataFloor, focus, signal
                   'repeating-linear-gradient(45deg, rgba(148,163,184,0.05) 0, rgba(148,163,184,0.05) 5px, transparent 5px, transparent 11px)',
               }}
             />
-            <div className="absolute inset-x-0 bottom-0 h-px bg-emerald-400/60" />
+            <div className="absolute inset-x-0 bottom-0 h-px bg-purple-400/60" />
           </div>
         )}
 
@@ -330,29 +330,36 @@ export const EpochRail = memo(function EpochRail({ tip, dataFloor, focus, signal
               'repeating-linear-gradient(0deg, rgba(148,163,184,0.13) 0 1px, transparent 1px 5px)',
           }}
         />
+        {/* The fill is the signaling % itself, so it wears the signaling purple — a lit column that
+            climbs the gauge as more of the epoch signals. */}
         <div
-          className={clsx(
-            'pointer-events-none absolute transition-all duration-500',
-            met ? 'bg-emerald-400/80' : 'bg-amber-400/80',
-          )}
+          className="pointer-events-none absolute bg-gradient-to-t from-purple-500/70 to-purple-400/90 transition-all duration-500"
           style={{
             left: 1,
             width: GAUGE_W - 2,
             top: `${gaugeTopPx}px`,
             height: `${yPx(start) - gaugeTopPx}px`,
-            boxShadow: met
-              ? '0 0 10px 1px rgba(52,211,153,0.35)'
-              : '0 0 10px 1px rgba(251,191,36,0.3)',
+            boxShadow: '0 0 12px 1px rgba(168,85,247,0.45)',
           }}
           title={`${formatInt(signaled)} signaling blocks of the ${formatInt(EPOCH)} this epoch holds`}
         />
+        {/* Activation threshold — the level the purple fill must climb to. A dashed line across the
+            gauge with its % chip tucked at the gauge (left-aligned, clear of the comet lane on the
+            right). The whole marker flips to emerald the moment the fill reaches it. */}
         <div
-          className="pointer-events-none absolute left-0 flex -translate-y-1/2 items-center gap-1"
-          style={{ top: `${yPx(thresholdH)}px` }}
-          title={`activation threshold ${thresholdLabel}% — the fill must reach this line`}
+          className="pointer-events-none absolute left-0 -translate-y-1/2"
+          style={{ top: `${yPx(thresholdH)}px`, width: GAUGE_W }}
+          title={`activation threshold ${thresholdLabel}% — signaling must reach this line for BIP-110 to lock in`}
         >
-          <span className="h-[2px] bg-zinc-200" style={{ width: GAUGE_W }} />
-          <span className="font-mono text-[8px] uppercase text-zinc-500">th</span>
+          <div className={clsx('w-full border-t border-dashed', met ? 'border-emerald-300' : 'border-zinc-100/85')} />
+          <span
+            className={clsx(
+              'absolute bottom-full left-0 mb-[2px] whitespace-nowrap rounded-[3px] px-1 py-[1px] font-mono text-[7.5px] font-bold leading-none tabular-nums shadow-md ring-1 backdrop-blur',
+              met ? 'bg-emerald-500/25 text-emerald-100 ring-emerald-300/50' : 'bg-black/75 text-zinc-100 ring-white/15',
+            )}
+          >
+            {thresholdLabel}%
+          </span>
         </div>
 
         {/* fine height ticks (right side, light) */}
@@ -376,12 +383,12 @@ export const EpochRail = memo(function EpochRail({ tip, dataFloor, focus, signal
             style={{ top: `${yPx(h)}px`, left: TRACK_INSET }}
             title={`${fmtHeight(h)} signals bit 4`}
           >
-            <span className="h-[5px] w-[5px] shrink-0 rounded-full bg-emerald-300 shadow-[0_0_6px_2px_rgba(52,211,153,0.55)]" />
+            <span className="h-[5px] w-[5px] shrink-0 rounded-full bg-purple-300 shadow-[0_0_6px_2px_rgba(168,85,247,0.6)]" />
             <span
               className="h-[2px] w-[64px] rounded-r-full"
               style={{
                 background:
-                  'linear-gradient(90deg, rgba(110,231,183,0.9), rgba(52,211,153,0.35) 55%, transparent)',
+                  'linear-gradient(90deg, rgba(216,180,254,0.9), rgba(168,85,247,0.4) 55%, transparent)',
               }}
             />
           </div>

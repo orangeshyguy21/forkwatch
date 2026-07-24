@@ -543,6 +543,12 @@ fn status_of(height: i64, hash: &str, by_height: &HashMap<i64, String>, tips: &H
     "absent".to_string()
 }
 
+/// ADDING A FIELD HERE? Bump `BLOCK_SCHEMA_VERSION` in frontend/src/types.ts.
+///
+/// Settled windows of this payload are served `immutable` for a year (`CC_IMMUTABLE` in main.rs),
+/// so browsers that already cached a window will keep serving the OLD shape to the NEW bundle until
+/// the TTL runs out. The frontend puts that version in the range URL, which is the cache key; the
+/// bump is what retires the stale entries.
 pub fn block_json(
     b: &Block,
     cbh: &HashMap<i64, String>,

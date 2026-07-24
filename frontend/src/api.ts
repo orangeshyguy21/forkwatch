@@ -1,4 +1,5 @@
 // Same-origin REST client for the Forkwars backend.
+import { BLOCK_SCHEMA_VERSION } from './types';
 import type { BlocksPage, BlocksRange, ChainState, Side, ViolationsResponse } from './types';
 
 const API_BASE = '/api';
@@ -34,6 +35,11 @@ export function fetchBlocks(limit = 30, signal?: AbortSignal): Promise<BlocksPag
 // Blocks present in the inclusive height range [from, to], ascending. Gaps are
 // allowed (heights still backfilling are simply absent). Window is capped at ~600
 // by the backend. This is the primary data source for the isometric scroller.
+//
+// Carries `v=BLOCK_SCHEMA_VERSION`. A settled window comes back `immutable` for a year, so without a
+// shape token in the cache key an added field leaves visitors scrolling into old history on JSON
+// that predates the code reading it — for a year, with no revalidation to correct it. The version is
+// part of the URL rather than a header because that IS the browser's cache key.
 export function fetchBlocksRange(
   from: number,
   to: number,
@@ -45,6 +51,7 @@ export function fetchBlocksRange(
   params.set('from', String(Math.max(0, Math.floor(from))));
   params.set('to', String(Math.max(0, Math.floor(to))));
   if (chain) params.set('chain', chain);
+  params.set('v', BLOCK_SCHEMA_VERSION);
   return getJson<BlocksRange>(`${API_BASE}/blocks/range?${params.toString()}`, signal, fresh);
 }
 

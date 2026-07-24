@@ -7,8 +7,9 @@
 // with how many blocks each side has mined since the split.
 //
 // Drawn in a fixed 800×46 viewBox and scaled to the header width; positions below are in those
-// units. Colours match the chain view: cyan = the Core/majority lane, slate = the Knots lane,
-// emerald = agreement, sky = merely syncing, amber = tip rejected, red = the split itself.
+// units. Colours match the chain view: emerald = the biggest (winning) lane, slate = the orphaned
+// lane, sky = merely syncing, amber = tip rejected, red = the split itself. (The signaling identity
+// is carried by the purple "SIGNALING" label on the header panels, not the rail lane.)
 
 import type { ChainState } from '../types';
 import { fmtHeight, formatInt } from '../util';
@@ -83,14 +84,14 @@ export function RaceRail({ state }: { state: ChainState }) {
         <line x1={40} y1={MID_Y} x2={CENTER_X} y2={MID_Y} stroke="rgba(248,113,113,0.35)" strokeWidth={2} />
         {/* square fork: vertical riser, then right-angle prongs */}
         <line x1={CENTER_X} y1={TOP_Y} x2={CENTER_X} y2={BOT_Y} stroke="rgba(248,113,113,0.6)" strokeWidth={2} strokeLinecap="square" />
-        <line x1={CENTER_X} y1={TOP_Y} x2={CENTER_X + lc} y2={TOP_Y} stroke="rgba(103,232,249,0.75)" strokeWidth={2} strokeLinecap="square" />
+        <line x1={CENTER_X} y1={TOP_Y} x2={CENTER_X + lc} y2={TOP_Y} stroke="rgba(52,211,153,0.8)" strokeWidth={2} strokeLinecap="square" />
         <line x1={CENTER_X} y1={BOT_Y} x2={CENTER_X + lk} y2={BOT_Y} stroke="rgba(148,163,184,0.7)" strokeWidth={2} strokeLinecap="square" />
-        <circle cx={CENTER_X + lc} cy={TOP_Y} r={3.5} fill="#67e8f9" />
+        <circle cx={CENTER_X + lc} cy={TOP_Y} r={3.5} fill="#34d399" />
         <circle cx={CENTER_X + lk} cy={BOT_Y} r={3.5} fill="#94a3b8" />
         <circle cx={CENTER_X} cy={MID_Y} r={4.5} fill="#f87171" />
         {/* Tip heights only. The stances live on the flanking panels and the "+N / +N" score is
             the hero's — the rail's job is the geometry. */}
-        <RailText x={CENTER_X + lc + 10} y={TOP_Y + 3} fill="#67e8f9">
+        <RailText x={CENTER_X + lc + 10} y={TOP_Y + 3} fill="#34d399">
           {fmtHeight(coreH)}
         </RailText>
         <RailText x={CENTER_X + lk + 10} y={BOT_Y + 4} fill="#94a3b8">

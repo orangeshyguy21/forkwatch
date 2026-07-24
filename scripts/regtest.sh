@@ -94,9 +94,16 @@ cmd_reset() {
   wait_healthy fw-core fw-knots
 
   echo "### building chain (RDTS activation, then $((epochs * retarget)) blocks of mainnet-shaped history) ###"
+  # regtest_build.py runs on the HOST and talks to the nodes over RPC, so — unlike the containers,
+  # which dc() feeds compose/.env — it needs FW_RPC_USER/FW_RPC_PASS passed explicitly, or it falls
+  # back to the compose defaults and can't authenticate ("nodes never became reachable").
+  local rpc_user rpc_pass
+  rpc_user=$(grep -E '^FW_RPC_USER=' "$MAIN_ENV" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  rpc_pass=$(grep -E '^FW_RPC_PASS=' "$MAIN_ENV" 2>/dev/null | tail -1 | cut -d= -f2- || true)
   local out height fork floor
   out=$(BLOCK_SPACING_SECS="$spacing" LEAD_BLOCKS="$lead" VISIBLE_EPOCHS="$epochs" \
         RETARGET_INTERVAL="$retarget" KNOTS_PER_100="$knots_per_100" \
+        RPC_USER="${rpc_user:-forkwars}" RPC_PASS="${rpc_pass:-forkwars_regtest}" \
         python3 "$HERE/scripts/regtest_build.py" | tee /dev/stderr)
   height=$(printf '%s' "$out" | grep -E '^HEIGHT=' | tail -1 | cut -d= -f2)
   fork=$(printf '%s' "$out" | grep -E '^FORK_AT_HEIGHT=' | tail -1 | cut -d= -f2)

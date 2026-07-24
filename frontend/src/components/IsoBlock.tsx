@@ -326,6 +326,10 @@ function IsoBlockImpl({
 }: Props) {
   const loading = !block;
   const c = themeColors(theme, block?.rdts_verdict, loading);
+  // Read defensively: a block served from a year-long immutable cache entry can predate the field
+  // (see BLOCK_SCHEMA_VERSION). A bare `.length` here threw during render, and this component sits
+  // deep enough in the tree that the root boundary swallowed the whole page.
+  const kinds = block?.rdts_kinds ?? [];
   const w = size;
   const h = size * CUBE_ASPECT;
   const showDetail = focusAmt > 0.5 && !loading;
@@ -538,9 +542,9 @@ function IsoBlockImpl({
         </g>
       </svg>
 
-      {block && block.rdts_kinds.length > 0 && (
+      {kinds.length > 0 && (
         <ViolationStickers
-          kinds={block.rdts_kinds}
+          kinds={kinds}
           size={size}
           animate={animate}
           at={materialize === 'intro' ? INTRO_STICKER_AT : undefined}
@@ -599,7 +603,7 @@ function IsoBlockImpl({
               )}
               {block.signals_110 && (
                 <span
-                  className="rounded border border-emerald-400/60 bg-emerald-500/10 px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-emerald-300"
+                  className="rounded border border-purple-400/60 bg-purple-500/10 px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-purple-300"
                   title={SIGNAL_LABEL}
                 >
                   Signaling

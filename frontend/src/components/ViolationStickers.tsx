@@ -196,7 +196,7 @@ export const SIGNAL_LABEL = 'signals BIP-110 (bit 4 set)';
  */
 export const SIGNAL_STICKER_BODY = (
   <>
-    <rect x="8" y="8" width="48" height="48" rx="12" {...cut('#34d399')} />
+    <rect x="8" y="8" width="48" height="48" rx="12" {...cut('#a855f7')} />
     {/* Latin cross, drawn as one outline so the die-cut reads cleanly at small sizes. */}
     <path
       d="M29.2 13 h5.6 v7 h7.2 v5.6 h-7.2 v13 h-5.6 v-13 h-7.2 v-5.6 h7.2 z"
