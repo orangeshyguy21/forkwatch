@@ -19,4 +19,6 @@ docker run --rm \
   zenika/alpine-chrome:with-puppeteer \
   node og/shoot.js /usr/src/app/og/og.html /pub/og-image.png 1200 630
 
+python3 optimize.py "$ROOT/frontend/public/og-image.png"
+
 echo "wrote $ROOT/frontend/public/og-image.png"
