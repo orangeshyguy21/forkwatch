@@ -286,10 +286,29 @@ const COLORWAYS = {
       orphanJunction: 'rgba(224,224,228,0.62)',
     },
   },
+  // Brand emerald standard + steel-grey orphan. The canonical chain glows in Forkwatch's own
+  // teal-emerald (the crest mark / wordmark green) with bright cyan-mint edges + waterline — the
+  // "on-brand" look. The losing branch greys out and dies, same as blue-steel.
+  'emerald-steel': {
+    standard: {
+      top: '#0e3d3c', left: '#062522', right: '#093230', edge: 'rgba(52,224,206,0.62)',
+      fill: { l0: '#1cbfa6', l1: '#0c3d37', r0: '#28d6ba', r1: '#114e46', water: 'rgba(150,255,238,0.96)' },
+    },
+    orphan: {
+      top: '#3a3a40', left: '#141416', right: '#1d1d20', edge: 'rgba(244,244,245,0.55)',
+      fill: { l0: '#6b6b76', l1: '#2c2c31', r0: '#82828d', r1: '#37373d', water: 'rgba(232,236,244,0.95)' },
+    },
+    connectors: {
+      standard: ['rgba(52,224,206,0.62)', 'rgba(46,206,190,0.34)'],
+      standardJunction: 'rgba(52,224,206,0.62)',
+      orphan: ['rgba(224,224,228,0.64)', 'rgba(210,212,218,0.3)'],
+      orphanJunction: 'rgba(224,224,228,0.62)',
+    },
+  },
 } satisfies Record<string, Colorway>;
 
 /** The active chain colorway. Change this ONE line to swap the whole look. */
-export const ACTIVE_COLORWAY: keyof typeof COLORWAYS = 'blue-steel';
+export const ACTIVE_COLORWAY: keyof typeof COLORWAYS = 'emerald-steel';
 
 const CW: Colorway = COLORWAYS[ACTIVE_COLORWAY];
 
