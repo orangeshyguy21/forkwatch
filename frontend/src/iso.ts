@@ -51,10 +51,106 @@ export function viewportScale(w: number): number {
   return MIN_SCALE + t * (1 - MIN_SCALE);
 }
 
-/** Fork-lane half-separation for a chain of width `w` at the given scale. Scales with the scene but
- *  is also capped to a fraction of the viewport so the two lanes always keep a channel on-screen. */
-export function laneGapFor(w: number, scale: number): number {
-  return Math.min(LANE_GAP * scale, w * 0.34);
+/** Fork-lane half-separation for a chain of width `w` at the given viewport scale and camera
+ *  magnification. It scales with the scene, is capped to a fraction of the viewport so both lanes
+ *  keep a channel on-screen — and, crucially, FLOORS partway down. Riding the camera linearly
+ *  collapses the two lanes into a single thread at the furthest detent, which destroys the very
+ *  comparison the camera exists to make. `mag = 1` is the pre-camera behaviour exactly. */
+export function laneGapFor(w: number, scale: number, mag = 1): number {
+  const floor = Math.min(w * 0.16, LANE_GAP * 0.55 * scale);
+  return Math.min(Math.max(LANE_GAP * scale * mag, floor), w * 0.34);
+}
+
+// --- Camera zoom (viewer-set) -------------------------------------------------------------------
+// The scene above frames ONE hero block: on a desktop only three or four blocks are on screen at a
+// time, which is the wrong altitude for watching a chain split — you cannot see one lane pulling
+// ahead of the other through a keyhole. The camera is a viewer-set distance, five detents from that
+// hero view out to a ~45-block map, and it is deliberately SEPARATE from the velocity `zoom` above
+// (which is the scroller's own speed-driven spring; see `dampZoom`).
+//
+// Three things move per detent, not one:
+//
+//  - `mag`    scales the whole scene — cube size, tunnel spacing, focus lift, lane separation. It is
+//             multiplied into the same `scale` the responsive width already rides, so almost nothing
+//             downstream has to know the camera exists.
+//  - `km`     multiplies the fisheye falloff K. Without it a pulled-back tunnel collapses: the far
+//             end compresses into a smear of 3px specks instead of a readable ladder of cubes.
+//  - `anchor` drifts UP from ANCHOR toward ANCHOR_FAR. Following the tip there is nothing above the
+//             focus, so that band is dead air; spending it on look-back is worth ~4 more blocks.
+//
+// Level 0 is exactly today's scene (mag 1, km 1, ANCHOR), so the default view is unchanged.
+
+export interface CameraLevel {
+  /** Uniform scene magnification. */
+  mag: number;
+  /** Multiplier on the fisheye falloff K. */
+  km: number;
+  /** Readout label for the control. */
+  label: string;
+  /** Half-window of heights to mount at this distance (the fisheye still culls within it). */
+  half: number;
+  /** Draw a height label every Nth block (plus the focus, always). */
+  stride: number;
+}
+
+export const CAMERA_LEVELS: CameraLevel[] = [
+  { mag: 1.0, km: 1.0, label: '1×', half: 64, stride: 1 },
+  { mag: 0.62, km: 0.72, label: '0.6×', half: 64, stride: 1 },
+  { mag: 0.38, km: 0.5, label: '0.4×', half: 80, stride: 2 },
+  { mag: 0.22, km: 0.32, label: '0.25×', half: 120, stride: 5 },
+  { mag: 0.13, km: 0.2, label: '0.15×', half: 170, stride: 10 },
+];
+
+export const CAMERA_MIN_LEVEL = 0;
+export const CAMERA_MAX_LEVEL = CAMERA_LEVELS.length - 1;
+
+/** Focus anchor at the furthest detent. @see CAMERA_LEVELS */
+export const ANCHOR_FAR = 0.15;
+
+export interface Camera {
+  /** The continuous level this was derived from (integer at rest, fractional mid-transition). */
+  level: number;
+  mag: number;
+  /** Effective fisheye falloff — pass to `posP` / `sizeFor`. */
+  k: number;
+  /** Effective focus anchor (fraction of viewport height). */
+  anchor: number;
+  half: number;
+  stride: number;
+}
+
+/** Camera parameters for a (possibly fractional) level. Interpolated in LOG space, so a frame
+ *  halfway through a zoom transition is geometrically sane rather than lopsided. */
+export function cameraFor(level: number): Camera {
+  const l = clamp(level, CAMERA_MIN_LEVEL, CAMERA_MAX_LEVEL);
+  const i = Math.min(Math.floor(l), CAMERA_MAX_LEVEL);
+  const j = Math.min(i + 1, CAMERA_MAX_LEVEL);
+  const t = l - i;
+  const a = CAMERA_LEVELS[i];
+  const b = CAMERA_LEVELS[j];
+  const geo = (x: number, y: number) => Math.exp(Math.log(x) + (Math.log(y) - Math.log(x)) * t);
+  return {
+    level: l,
+    mag: geo(a.mag, b.mag),
+    k: K * geo(a.km, b.km),
+    anchor: ANCHOR + (ANCHOR_FAR - ANCHOR) * (l / CAMERA_MAX_LEVEL),
+    // Window and stride are per-detent, not interpolated: mounting a fractional number of blocks
+    // means nothing, and a stride that slides mid-transition makes labels flicker on and off.
+    half: Math.max(a.half, b.half),
+    stride: t < 0.5 ? a.stride : b.stride,
+  };
+}
+
+/** Damped velocity zoom. The scroller's speed spring shrinks blocks as you fly; at a far camera the
+ *  cubes are already small and an undamped fly powders them. */
+export function dampZoom(zoom: number, mag: number): number {
+  return 1 + (zoom - 1) * Math.sqrt(mag);
+}
+
+/** Wheel travel per notch at this camera. A notch covers more chain the further back you stand —
+ *  same instinct as a map: identical hand movement, more ground. */
+export function wheelSensFor(mag: number): number {
+  return WHEEL_SENS / Math.pow(mag, 0.6);
 }
 
 /** Chain-link size (px, CONSTANT — links never fisheye). */
@@ -141,20 +237,21 @@ function tunnelC(zoom: number): number {
   return (STACK * MAX_SIZE) / Math.sqrt(zoom);
 }
 
-/** Screen offset (px, signed) from the anchor for a block `d` heights from focus. */
-export function posP(d: number, zoom: number): number {
+/** Screen offset (px, signed) from the anchor for a block `d` heights from focus. `k` is the fisheye
+ *  falloff — the camera flattens it as it pulls back; omitted, it is today's constant K. */
+export function posP(d: number, zoom: number, k: number = K): number {
   const C = tunnelC(zoom);
   const s = d < 0 ? -1 : 1;
-  return s * (C / K) * Math.log(1 + K * Math.abs(d));
+  return s * (C / k) * Math.log(1 + k * Math.abs(d));
 }
 
 // ---------------------------------------------------------------------------
 // Fisheye scale + depth.
 // ---------------------------------------------------------------------------
 
-/** Per-block iso footprint given its distance (in heights) from focus + zoom. */
-export function sizeFor(dist: number, zoom: number): number {
-  return MAX_SIZE / (1 + K * Math.abs(dist)) / Math.sqrt(zoom);
+/** Per-block iso footprint given its distance (in heights) from focus + zoom. @see posP for `k`. */
+export function sizeFor(dist: number, zoom: number, k: number = K): number {
+  return MAX_SIZE / (1 + k * Math.abs(dist)) / Math.sqrt(zoom);
 }
 
 /** Extra px separation injected around the focused block so its chain links have room to read.

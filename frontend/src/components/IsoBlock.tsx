@@ -33,6 +33,16 @@ interface Props {
   onSelect: (height: number) => void;
 }
 
+// Level of detail. The camera can now stand far enough back to put 40+ blocks on screen, at which
+// point a cube is ~14px: a height label beside it is noise, a die-cut sticker on its flank is three
+// unreadable pixels, and raining 3,200 voxels into it on spawn is work spent on nothing. LOD keys
+// off the block's own projected size, so it degrades continuously and needs to know nothing about
+// the camera. Two things deliberately survive to the smallest cube: the coloured fill (which is what
+// tells the two lanes apart at a glance) and the violation glow (the one event worth flying back to).
+const LOD_DETAIL = 50; // hash + tx/size readout, verdict chips
+const LOD_STICKER = 28; // violation + signaling stickers on the flanks
+const LOD_RAIN = 60; // the spawn's cube-rain; below this a new block just draws its base and seals
+
 const RDTS_TAG: Record<string, { label: string; cls: string }> = {
   would_violate: { label: 'WOULD VIOLATE', cls: 'text-amber-300 border-amber-400/60 bg-amber-500/10' },
   invalid: { label: 'REJECTED BY KNOTS', cls: 'text-red-300 border-red-400/60 bg-red-500/10' },
@@ -332,10 +342,16 @@ function IsoBlockImpl({
   const kinds = block?.rdts_kinds ?? [];
   const w = size;
   const h = size * CUBE_ASPECT;
-  const showDetail = focusAmt > 0.5 && !loading;
+  const showDetail = focusAmt > 0.5 && size >= LOD_DETAIL && !loading;
+  const showStickers = size >= LOD_STICKER;
   const gid = `g-${theme}-${loading ? 'l' : 'f'}`;
   const animate = !!materialize && !reducedMotion && !loading;
-  const rain = animate && materialize === 'spawn'; // the intro clamp-in skips the cube rain
+  // Whether the rain is worth drawing is decided ONCE, as the spawn starts, and then held: zooming
+  // the camera mid-spawn must not switch the cube-rain on halfway through its timeline, where every
+  // voxel's delay has already elapsed and the whole shower would land in one frame.
+  const rainOk = useRef(size >= LOD_RAIN);
+  if (!materialize) rainOk.current = size >= LOD_RAIN;
+  const rain = animate && materialize === 'spawn' && rainOk.current; // the intro clamp-in skips the rain
   const baseAt = materialize === 'intro' ? INTRO_BASE_AT : SPAWN_BASE_AT;
   const encloseAt = materialize === 'intro' ? INTRO_ENCLOSE : SPAWN_ENCLOSE;
   const labelSize = Math.max(10, Math.min(30, size * 0.16));
@@ -525,7 +541,7 @@ function IsoBlockImpl({
               into perspective exactly like the hazard stickers on the right flank. The u/v extents
               are picked so the artwork stays square on the face, since the face's two axes have
               different screen lengths (|u| ≈ 55.9, |v| = 66). */}
-          {block?.signals_110 && (
+          {block?.signals_110 && showStickers && (
             <g
               transform={`matrix(50,25,0,66,0,25) translate(0.13,0.10) scale(${SIGNAL_U / 64},${SIGNAL_V / 64})`}
             >
@@ -542,7 +558,7 @@ function IsoBlockImpl({
         </g>
       </svg>
 
-      {kinds.length > 0 && (
+      {kinds.length > 0 && showStickers && (
         <ViolationStickers
           kinds={kinds}
           size={size}

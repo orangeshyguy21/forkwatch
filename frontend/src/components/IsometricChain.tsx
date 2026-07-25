@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { fetchViolations } from '../api';
 import {
-  ANCHOR,
+  cameraFor,
   connectorColors,
+  dampZoom,
   laneGapFor,
   LINK_RX,
   LINK_RY,
@@ -18,8 +19,10 @@ import {
   sizeFor,
   STACK,
   viewportScale,
+  wheelSensFor,
 } from '../iso';
 import { useBreakpoint } from '../hooks/useBreakpoint';
+import { useCamera } from '../hooks/useCamera';
 import { useScrollFocus } from '../hooks/useScrollFocus';
 import { useStore } from '../store';
 import type { Block, ViolationsResponse } from '../types';
@@ -30,6 +33,7 @@ import { EpochRail } from './EpochRail';
 import { IsoBlock } from './IsoBlock';
 import { ScrollRail } from './ScrollRail';
 import { SIGNAL_LABEL, SignalStickerIcon, StickerIcon } from './ViolationStickers';
+import { ZoomControl } from './ZoomControl';
 
 /** Fly-number reveal: how "flying" (0..1) it must be, and how long that must hold, before the big
  *  centered height number pops up — so a quick flick or a couple of notches doesn't flash it. */
@@ -47,6 +51,12 @@ const STRETCH_CAP = 6;
 /** Width (px) of the block-details drawer (matches the inner panel's w-80). The drawer animates its
  *  width between 0 and this, so the chain smoothly reflows aside instead of snapping. */
 const DRAWER_W = 320;
+
+/** Below this scene scale the interlocking chain is not drawn at all: its links would be smaller
+ *  than their own stroke, and a smear of grey between cubes reads worse than the plain tether the
+ *  rest of the chain already uses. */
+const LINK_MIN_SCALE = 0.34;
+
 
 /** New-block spawn sequence, phase 1: the chain grows link-by-link over this long, then the block's
  *  base/cubes/panels follow (their delays live in IsoBlock and are timed to start after this). */
@@ -111,8 +121,10 @@ interface ChainBuild {
 
 /** Full interlocking chain across ONE gap segment. Lives only in the gap — from the bottom vertex of
  *  the upper block to the top vertex of the lower one — so it emerges from the bottom and seats into
- *  the top, never crossing a block surface. Reserved for the focused block + the fork moment. */
-function chainSegment(a: LanePt, b: LanePt, color: string, kp: string, build?: ChainBuild): JSX.Element[] {
+ *  the top, never crossing a block surface. Reserved for the focused block + the fork moment.
+ *  `s` is the scene scale: the links live in the same space as the cubes and must shrink with them —
+ *  left constant they became rings as wide as the blocks once the camera pulled back. */
+function chainSegment(a: LanePt, b: LanePt, color: string, kp: string, s: number, build?: ChainBuild): JSX.Element[] {
   const upper = a.y <= b.y ? a : b;
   const lower = a.y <= b.y ? b : a;
   const x0 = upper.x;
@@ -124,7 +136,9 @@ function chainSegment(a: LanePt, b: LanePt, color: string, kp: string, build?: C
   if (dy < 3) return []; // blocks touch/overlap -> no gap -> no chain
   const dist = Math.hypot(dx, dy) || 1;
   const ang = (Math.atan2(dy, dx) * 180) / Math.PI;
-  const n = Math.max(1, Math.round(dist / LINK_STEP));
+  const rx = LINK_RX * s;
+  const ry = LINK_RY * s;
+  const n = Math.max(1, Math.round(dist / (LINK_STEP * s)));
   const els: JSX.Element[] = [];
   for (let j = 0; j < n; j++) {
     const t = (j + 0.5) / n;
@@ -143,11 +157,11 @@ function chainSegment(a: LanePt, b: LanePt, color: string, kp: string, build?: C
         style={build ? { animationDelay: `${Math.round(linkDelay)}ms` } : undefined}
         cx={0}
         cy={0}
-        rx={LINK_RX}
-        ry={LINK_RY}
+        rx={rx}
+        ry={ry}
         fill="none"
         stroke={color}
-        strokeWidth={1.6}
+        strokeWidth={1.6 * Math.max(0.7, s)}
         transform={`translate(${cx.toFixed(1)},${cy.toFixed(1)}) rotate(${(ang + 90).toFixed(1)}) scale(${narrow ? 0.4 : 1},1)`}
       />,
     );
@@ -193,16 +207,18 @@ function laneConnectors(
   kp: string,
   focusH: number,
   matH: number | null,
+  scale: number,
   intro?: { delayFor: (h: number) => number },
 ): JSX.Element[] {
   const els: JSX.Element[] = [];
+  const linked = scale >= LINK_MIN_SCALE;
   for (let i = 0; i < pts.length - 1; i++) {
     const a = pts[i];
     const b = pts[i + 1];
     // Height-based keys keep each link stable across the per-frame scroll re-renders, so the spawn
     // chain-build animation isn't remounted (and restarted) every frame.
     const k = `${kp}${a.h}_${b.h}`;
-    if (a.h === focusH || b.h === focusH) {
+    if (linked && (a.h === focusH || b.h === focusH)) {
       // The newer (upper) endpoint being the materializing tip => its downward chain builds on.
       const build: ChainBuild | undefined =
         b.h === matH
@@ -210,7 +226,7 @@ function laneConnectors(
           : intro
             ? { t0: INTRO_CHAIN_T0, ms: INTRO_CHAIN_MS, topDown: b.h === focusH }
             : undefined;
-      els.push(...chainSegment(a, b, full, k, build));
+      els.push(...chainSegment(a, b, full, k, scale, build));
     } else {
       const c = simpleConnector(
         a, b, faint, k,
@@ -258,12 +274,18 @@ export function IsometricChain() {
     return Number.isFinite(n) ? n : null;
   }, []);
 
+  // Viewer-set camera distance. `camera.level` is the eased, continuous value the geometry reads;
+  // `camera.target` is the detent the control shows.
+  const camera = useCamera(reducedMotion);
+  const cam = cameraFor(camera.level);
+
   // Measure the chain viewport. Declared before the scroller so the touch drag-sensitivity (which
   // depends on the responsive scale, itself a function of width) can be handed to it.
   const [dims, setDims] = useState({ w: 1200, h: 700 });
   // Touch drag moves the chain 1:1: one block per resting inter-block gap (STACK * block size),
-  // scaled the same way the scene is, so a pan feels the same at any width.
-  const dragPxPerHeight = STACK * MAX_SIZE * viewportScale(dims.w);
+  // scaled the same way the scene is — by width AND by the camera — so a pan feels the same at any
+  // width and any distance.
+  const dragPxPerHeight = STACK * MAX_SIZE * viewportScale(dims.w) * cam.mag;
 
   // The tip the CHAIN renders to, which is not always the tip the network is at. `tipHeight` is the
   // higher of the two nodes' tips and jumps the instant EITHER node hears a block, but the spine's
@@ -290,6 +312,8 @@ export function IsometricChain() {
     reducedMotion,
     initialFocus,
     dragPxPerHeight,
+    wheelSens: wheelSensFor(cam.mag),
+    onZoomStep: camera.step,
   });
 
   useLayoutEffect(() => {
@@ -421,19 +445,35 @@ export function IsometricChain() {
   const railFloor = floorHeight > 0 && floorHeight < floor ? floorHeight : floor;
   const H = dims.h;
   const W = dims.w;
-  const anchorY = H * ANCHOR;
+  // The anchor rides the camera: pulled back and following the tip there is nothing above the focus,
+  // so that band is dead air better spent on look-back. Level 0 is exactly ANCHOR.
+  const anchorY = H * cam.anchor;
   // Centre the chain column in the viewport. The epoch rail (left) and timeline rail (right) are
   // the same width, so the viewport centre IS the page centre — the chain lines up under the clock.
   const baseX = W * 0.5;
-  // Uniform down-scale for narrow viewports (1 on desktop, so the desktop scene is unchanged). Both
-  // the block/tunnel geometry (via `project`) and the fork lane separation ride this scale so the
-  // focused block and both lanes stay fully on-screen on a phone.
-  const scale = viewportScale(W);
-  const laneGap = laneGapFor(W, scale);
+  // Uniform down-scale for narrow viewports (1 on desktop, so the desktop scene is unchanged),
+  // multiplied by the camera's magnification. Both the block/tunnel geometry (via `project`) and the
+  // fork lane separation ride this scale, so the focused block and both lanes stay fully on-screen
+  // on a phone and at any camera distance. Folding the camera in here is what keeps the rest of the
+  // component — stretch damping, the fly-number offset, the backdrop's parallax — camera-aware for
+  // free. The lane gap gets the camera separately, because it must NOT shrink all the way with it.
+  const viewScale = viewportScale(W);
+  const scale = viewScale * cam.mag;
+  const laneGap = laneGapFor(W, viewScale, cam.mag);
+  // Velocity zoom, damped by distance: at a far camera the cubes are already small and an undamped
+  // fly would powder them.
+  const velZoom = dampZoom(zoom, cam.mag);
+  // How far past the viewport edge a block is still mounted (so nothing pops in at the edge, and the
+  // connector to the last visible block has something to attach to). It rides the scene: 320px is a
+  // couple of blocks at 1× and a dozen per lane at the furthest camera, which is pure work for
+  // pixels nobody sees. Exactly 320 at scale 1, so the desktop scene is unchanged.
+  const cullMargin = Math.min(320, 320 * scale + 60);
 
   // Vertical window: a bounded band of CONSECUTIVE blocks centered on the focus (stride 1). The
   // fisheye tunnel shrinks distant blocks; we cap how many we mount and cull off-screen ones below.
-  const HALF = 64;
+  // The cap grows with camera distance, or the far end of a pulled-back view would be clipped by
+  // the window before the fisheye ever got to cull it.
+  const HALF = cam.half;
   const heightHi = Math.min(tip, Math.floor(focusHeight) + HALF);
   const heightLo = Math.max(floor, Math.ceil(focusHeight) - HALF);
 
@@ -442,11 +482,11 @@ export function IsometricChain() {
       const d = h - focusHeight;
       return {
         d,
-        y: anchorY - (posP(d, zoom) + focusLift(d)) * scale,
-        size: sizeFor(d, zoom) * focusPop(d) * scale,
+        y: anchorY - (posP(d, velZoom, cam.k) + focusLift(d)) * scale,
+        size: sizeFor(d, velZoom, cam.k) * focusPop(d) * scale,
       };
     },
-    [focusHeight, anchorY, zoom, scale],
+    [focusHeight, anchorY, velZoom, scale, cam.k],
   );
 
   // Opacity fade near the top/bottom viewport edges, so blocks dissolve off-screen (not crowd).
@@ -493,12 +533,16 @@ export function IsometricChain() {
       });
     };
 
+    // Height labels thin out as the camera pulls back: a label per block is the point at 1×, and a
+    // wall of overlapping numbers at the far detents. The focused block always keeps its own.
+    const labelled = (h: number) => cam.stride === 1 || h === focusedHeight || h % cam.stride === 0;
+
     // Shared spine: heights at/below the fork point (or the whole window when not forked).
     const sharedTop = forked ? Math.min(heightHi, forkAt) : heightHi;
     for (let h = heightLo; h <= sharedTop; h++) {
       const p = project(h);
-      if (p.y < -320 || p.y > H + 320 || p.size < 2) continue;
-      add(h, baseX, p.y, p.size, blocksByHeight.get(h), 'shared', p.d, 2000, true);
+      if (p.y < -cullMargin || p.y > H + cullMargin || p.size < 2) continue;
+      add(h, baseX, p.y, p.size, blocksByHeight.get(h), 'shared', p.d, 2000, labelled(h));
       spine.push({ x: baseX, y: p.y, size: p.size, h });
     }
 
@@ -509,10 +553,12 @@ export function IsometricChain() {
       // a single centered height label is drawn per row instead.
       for (let h = Math.max(heightLo, forkAt + 1); h <= heightHi; h++) {
         const p = project(h);
-        if (p.y < -320 || p.y > H + 320 || p.size < 2) continue;
+        if (p.y < -cullMargin || p.y > H + cullMargin || p.size < 2) continue;
         add(h, baseX - laneGap, p.y, p.size, blocksByHeight.get(h), 'core', p.d, 2100, false);
         core.push({ x: baseX - laneGap, y: p.y, size: p.size, h });
-        labels.push({ key: `L${h}`, height: h, y: p.y, focusAmt: focusAmount(p.d), depth: depthFor(p.d) * edgeFade(p.y) });
+        if (labelled(h)) {
+          labels.push({ key: `L${h}`, height: h, y: p.y, focusAmt: focusAmount(p.d), depth: depthFor(p.d) * edgeFade(p.y) });
+        }
       }
       // Knots lane — from the Knots node's OWN chain (range-fetched, chain=knots), so the full
       // minority branch renders at any depth. It only exists up to the Knots tip (its 1% hashrate
@@ -520,7 +566,7 @@ export function IsometricChain() {
       const knotsHi = knotsTip == null ? heightHi : Math.min(heightHi, knotsTip);
       for (let hgt = Math.max(heightLo, forkAt + 1); hgt <= knotsHi; hgt++) {
         const p = project(hgt);
-        if (p.y < -320 || p.y > H + 320 || p.size < 2) continue;
+        if (p.y < -cullMargin || p.y > H + cullMargin || p.size < 2) continue;
         add(hgt, baseX + laneGap, p.y, p.size, knotsBlocksByHeight.get(hgt), 'knots', p.d, 2100, false);
         knots.push({ x: baseX + laneGap, y: p.y, size: p.size, h: hgt });
       }
@@ -528,7 +574,7 @@ export function IsometricChain() {
       // ONLY when that region is on-screen (so we never draw a long diagonal to the distant tip).
       const pf = project(forkAt);
       const p1 = project(forkAt + 1);
-      const onScreen = (y: number) => y >= -320 && y <= H + 320;
+      const onScreen = (y: number) => y >= -cullMargin && y <= H + cullMargin;
       if (forkAt >= heightLo && onScreen(pf.y) && onScreen(p1.y) && p1.size >= 6) {
         const fpPt: LanePt = { x: baseX, y: pf.y, size: pf.size, h: forkAt };
         junctionCore = [{ x: baseX - laneGap, y: p1.y, size: p1.size, h: forkAt + 1 }, fpPt];
@@ -541,8 +587,9 @@ export function IsometricChain() {
     return { nodes: out, spineArr: spine, coreArr: core, knotsArr: knots, junctionCore, junctionKnots, forkLabels: labels };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    heightLo, heightHi, focusHeight, zoom, baseX, laneGap, H, blocksByHeight, knotsBlocksByHeight, knotsTip,
+    heightLo, heightHi, focusHeight, velZoom, baseX, laneGap, H, blocksByHeight, knotsBlocksByHeight, knotsTip,
     forked, forkAt, materializeHeight, project, state, tipHeight, pruneFloor, edgeFade,
+    cam.stride, focusedHeight, cullMargin,
   ]);
 
   // -------- Debounced data fetch (+ prefetch margin) --------
@@ -601,6 +648,8 @@ export function IsometricChain() {
   const seekTip = useCallback(() => setTarget(tip, true), [setTarget, tip]);
   const seekFork = useCallback(() => setTarget(forkAt, true), [setTarget, forkAt]);
 
+  const { step: cameraStep, setLevel: setCameraLevel } = camera;
+
   // -------- Keyboard -------- (window-level so arrows scroll the chain without needing to click it
   // first; ignored while typing in a field). ↑/↓ step one block, PgUp/PgDn ten, Home/End jump.
   useEffect(() => {
@@ -628,6 +677,19 @@ export function IsometricChain() {
         case 'End':
           setTarget(pruneFloor, true);
           break;
+        // Camera: the browser's own zoom keys, which is what a viewer reaches for. '0' resets to the
+        // hero view, matching the same convention.
+        case '+':
+        case '=':
+          cameraStep(-1);
+          break;
+        case '-':
+        case '_':
+          cameraStep(1);
+          break;
+        case '0':
+          setCameraLevel(0);
+          break;
         default:
           return;
       }
@@ -635,7 +697,7 @@ export function IsometricChain() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [chainTip, pruneFloor, nudge, setTarget]);
+  }, [chainTip, pruneFloor, nudge, setTarget, cameraStep, setCameraLevel]);
 
   const bigNum = Math.round(focusHeight);
   const flyAmt = clamp((zoom - 1) / 1.3, 0, 1);
@@ -741,11 +803,20 @@ export function IsometricChain() {
             height={H}
             style={{ overflow: 'visible', zIndex: 2400 }}
           >
-            {laneConnectors(spineArr, connectorColors.standard[0], connectorColors.standard[1], 's', focusInt, materializeHeight, introRun ? { delayFor: introDelayFor } : undefined)}
-            {laneConnectors(coreArr, connectorColors.standard[0], connectorColors.standard[1], 'c', focusInt, materializeHeight, introRun ? { delayFor: introDelayFor } : undefined)}
-            {laneConnectors(knotsArr, connectorColors.orphan[0], connectorColors.orphan[1], 'k', focusInt, materializeHeight, introRun ? { delayFor: introDelayFor } : undefined)}
-            {junctionCore.length === 2 && chainSegment(junctionCore[0], junctionCore[1], connectorColors.standardJunction, 'jc', introRun ? { t0: INTRO_CHAIN_T0, ms: INTRO_CHAIN_MS, topDown: false } : undefined)}
-            {junctionKnots.length === 2 && chainSegment(junctionKnots[0], junctionKnots[1], connectorColors.orphanJunction, 'jk', introRun ? { t0: INTRO_CHAIN_T0, ms: INTRO_CHAIN_MS, topDown: false } : undefined)}
+            {laneConnectors(spineArr, connectorColors.standard[0], connectorColors.standard[1], 's', focusInt, materializeHeight, scale, introRun ? { delayFor: introDelayFor } : undefined)}
+            {laneConnectors(coreArr, connectorColors.standard[0], connectorColors.standard[1], 'c', focusInt, materializeHeight, scale, introRun ? { delayFor: introDelayFor } : undefined)}
+            {laneConnectors(knotsArr, connectorColors.orphan[0], connectorColors.orphan[1], 'k', focusInt, materializeHeight, scale, introRun ? { delayFor: introDelayFor } : undefined)}
+            {/* The junction keeps its chain a little further out than the lanes do — it is the one
+                place where the split is stated — and falls back to the plain tether beyond that,
+                because the two lanes must never float unattached to the spine they grew from. */}
+            {junctionCore.length === 2 &&
+              (scale >= LINK_MIN_SCALE * 0.7
+                ? chainSegment(junctionCore[0], junctionCore[1], connectorColors.standardJunction, 'jc', scale, introRun ? { t0: INTRO_CHAIN_T0, ms: INTRO_CHAIN_MS, topDown: false } : undefined)
+                : simpleConnector(junctionCore[0], junctionCore[1], connectorColors.standardJunction, 'jc'))}
+            {junctionKnots.length === 2 &&
+              (scale >= LINK_MIN_SCALE * 0.7
+                ? chainSegment(junctionKnots[0], junctionKnots[1], connectorColors.orphanJunction, 'jk', scale, introRun ? { t0: INTRO_CHAIN_T0, ms: INTRO_CHAIN_MS, topDown: false } : undefined)
+                : simpleConnector(junctionKnots[0], junctionKnots[1], connectorColors.orphanJunction, 'jk'))}
           </svg>
         )}
 
@@ -815,7 +886,9 @@ export function IsometricChain() {
               top: l.y,
               transform: 'translate(-50%, -50%)',
               opacity: l.depth,
-              fontSize: Math.max(11, 12 + l.focusAmt * 20),
+              // Rides the scene like the per-block labels do, or a 32px number ends up dwarfing the
+              // 30px cubes it sits between at a far camera. ×1 at scale 1, so 1× is unchanged.
+              fontSize: Math.max(10, (12 + l.focusAmt * 20) * Math.min(1, scale * 1.4)),
               textShadow: '0 1px 5px rgba(0,0,0,0.95)',
               zIndex: 3000,
             }}
@@ -863,13 +936,18 @@ export function IsometricChain() {
             >
               {atTip ? '● following tip' : `${formatInt(Math.max(0, tip - bigNum))} below tip`}
             </div>
+            {/* Flight speed, not the camera — the two used to share the word "zoom", which now means
+                the viewer's own distance setting shown by the control's pips. */}
             {Math.abs(velocity) > 0.15 && (
               <div className="rounded-md border border-white/10 bg-black/50 px-2.5 py-1 font-mono text-[10px] text-zinc-500 backdrop-blur">
-                zoom {zoom.toFixed(1)}×
+                fly {zoom.toFixed(1)}×
               </div>
             )}
           </div>
         )}
+
+        {/* Camera distance. */}
+        {chainVisible && <ZoomControl level={camera.target} onStep={cameraStep} compact={!isDesktop} />}
 
         {/* pinned jump to the off-screen Knots (minority) tip, sitting on that lane's x */}
         {chainVisible && knotsTipOff && knotsTip != null && (
@@ -878,7 +956,9 @@ export function IsometricChain() {
             title={`Jump to orphaned-chain tip at ${fmtHeight(knotsTip)}`}
             className="absolute flex -translate-x-1/2 items-center gap-1.5 rounded-md border border-slate-400/40 bg-slate-500/15 px-2.5 py-1 font-mono text-[11px] font-bold tabular-nums text-slate-200 backdrop-blur transition hover:bg-slate-400/25"
             style={{
-              left: baseX + laneGap,
+              // Sits on its lane's own x — except at the bottom edge, where it is pulled in clear of
+              // the camera control in that corner.
+              left: knotsTipOff === 'below' ? Math.min(baseX + laneGap, W - 150) : baseX + laneGap,
               [knotsTipOff === 'below' ? 'bottom' : 'top']: 14,
               zIndex: 3200,
             }}

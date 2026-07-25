@@ -50,7 +50,18 @@ interface Params {
   /** Finger-travel (px) per one block height, for touch drag-to-pan — roughly the on-screen gap
    *  between adjacent blocks at rest, so a drag moves the chain 1:1 under the finger. */
   dragPxPerHeight?: number;
+  /** Heights of speed per px of wheel travel. Rises as the camera pulls back (`wheelSensFor`), so a
+   *  notch covers more chain the further back you stand. Defaults to the tuned desktop value. */
+  wheelSens?: number;
+  /** A zoom gesture — ctrl/⌘+wheel, trackpad pinch, or a two-finger touch pinch — in camera detents
+   *  (-1 = closer). Fired in whole steps: the gestures stream small deltas, which are accumulated
+   *  here and released one detent at a time so the camera lands on the detents rather than sliding. */
+  onZoomStep?: (delta: number) => void;
 }
+
+/** Accumulated ctrl+wheel px, and log2 of accumulated pinch spread, per emitted camera step. */
+const ZOOM_WHEEL_STEP = 42;
+const ZOOM_PINCH_STEP = 0.3;
 
 /**
  * Virtual-focus scroller. Wheel/keyboard/scrollbar set an eased `target` height;
@@ -64,6 +75,8 @@ export function useScrollFocus({
   reducedMotion,
   initialFocus,
   dragPxPerHeight,
+  wheelSens,
+  onZoomStep,
 }: Params): ScrollFocus {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -72,11 +85,15 @@ export function useScrollFocus({
   const reducedRef = useRef(reducedMotion);
   const initialFocusRef = useRef(initialFocus);
   const dragPphRef = useRef(dragPxPerHeight ?? 150);
+  const wheelSensRef = useRef(wheelSens ?? WHEEL_SENS);
+  const zoomStepRef = useRef(onZoomStep);
   tipRef.current = tipHeight;
   floorRef.current = pruneFloor;
   reducedRef.current = reducedMotion;
   initialFocusRef.current = initialFocus;
   dragPphRef.current = dragPxPerHeight ?? 150;
+  wheelSensRef.current = wheelSens ?? WHEEL_SENS;
+  zoomStepRef.current = onZoomStep;
 
   // True while a touch/pen drag is actively panning the chain (suppresses the detent, like a live
   // wheel). Mouse never sets it — desktop keeps wheel + click-to-select untouched.
@@ -141,9 +158,24 @@ export function useScrollFocus({
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    let zoomAccum = 0;
     const onWheel = (e: WheelEvent) => {
       if (tipRef.current == null || floorRef.current == null) return;
       e.preventDefault();
+      // ctrl/⌘ + wheel is the browser's zoom gesture — and it is what a trackpad pinch reports. It
+      // moves the CAMERA, never the chain. preventDefault above already stopped the page from
+      // zooming, which would otherwise fight us for the same gesture.
+      if (e.ctrlKey || e.metaKey) {
+        if (!zoomStepRef.current) return;
+        zoomAccum += e.deltaY;
+        while (Math.abs(zoomAccum) >= ZOOM_WHEEL_STEP) {
+          const dir = Math.sign(zoomAccum);
+          zoomAccum -= dir * ZOOM_WHEEL_STEP;
+          zoomStepRef.current(dir); // wheel down / pinch in => further out
+        }
+        return;
+      }
+      zoomAccum = 0;
       interactedRef.current = true;
       // Normalize wheel units: 0=pixel, 1=line, 2=page.
       const factor = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? el.clientHeight : 1;
@@ -167,13 +199,13 @@ export function useScrollFocus({
 
       // Reduced motion: no momentum/glide — move the target directly and let it snap.
       if (reducedRef.current) {
-        targetRef.current = clampTarget(targetRef.current - raw * WHEEL_SENS * accelRef.current);
+        targetRef.current = clampTarget(targetRef.current - raw * wheelSensRef.current * accelRef.current);
         return;
       }
       settleUntilRef.current = now + SCROLL_SETTLE_MS; // keep the flight live + suppress the detent
       // deltaY > 0 (scroll down) moves the focus toward older/lower heights. Each tick shoves speed
       // harder as acceleration ramps; the running speed is capped so a fast fly stays controllable.
-      const next = mvelRef.current - raw * WHEEL_SENS * accelRef.current;
+      const next = mvelRef.current - raw * wheelSensRef.current * accelRef.current;
       mvelRef.current = clamp(next, -MAX_SCROLL_SPEED, MAX_SCROLL_SPEED);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
@@ -195,10 +227,33 @@ export function useScrollFocus({
     let lastY = 0;
     let vel = 0; // smoothed heights/frame across recent moves
     const THRESH = 6; // px before a press becomes a drag
+    // Two-finger pinch = camera zoom. Tracked alongside the pan because the same pointer stream
+    // carries both; the second finger landing cancels any pan in progress.
+    const pts = new Map<number, { x: number; y: number }>();
+    let pinchDist = 0;
+    let pinchAccum = 0;
+    const spread = (): number => {
+      const [a, b] = [...pts.values()];
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    };
+    const endDrag = () => {
+      if (!active) return;
+      active = false;
+      touchDragRef.current = false;
+    };
 
     const onDown = (e: PointerEvent) => {
       if (e.pointerType === 'mouse') return;
       if (tipRef.current == null || floorRef.current == null) return;
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pts.size === 2 && zoomStepRef.current) {
+        // A pinch, not a pan: drop the drag (and its would-be fling) on the floor.
+        endDrag();
+        pointerId = -1;
+        pinchDist = spread();
+        pinchAccum = 0;
+        return;
+      }
       pointerId = e.pointerId;
       startX = e.clientX;
       startY = lastY = e.clientY;
@@ -209,6 +264,23 @@ export function useScrollFocus({
       accelRef.current = 1;
     };
     const onMove = (e: PointerEvent) => {
+      if (pts.has(e.pointerId)) pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pts.size >= 2) {
+        if (!zoomStepRef.current || pinchDist <= 0) return;
+        e.preventDefault();
+        const now = spread();
+        if (now <= 0) return;
+        // Accumulate in log space so the gesture is scale-invariant: the same relative spread emits
+        // a step whether the fingers started 60px or 300px apart.
+        pinchAccum += Math.log2(now / pinchDist);
+        pinchDist = now;
+        while (Math.abs(pinchAccum) >= ZOOM_PINCH_STEP) {
+          const dir = Math.sign(pinchAccum);
+          pinchAccum -= dir * ZOOM_PINCH_STEP;
+          zoomStepRef.current(-dir); // fingers apart => closer camera
+        }
+        return;
+      }
       if (e.pointerId !== pointerId) return;
       if (!active) {
         if (Math.abs(e.clientY - startY) < THRESH && Math.abs(e.clientX - startX) < THRESH) return;
@@ -231,6 +303,23 @@ export function useScrollFocus({
       vel += (targetRef.current - prev - vel) * 0.4;
     };
     const onUp = (e: PointerEvent) => {
+      const wasPinching = pts.size >= 2;
+      pts.delete(e.pointerId);
+      if (wasPinching) {
+        // Coming out of a pinch: whichever finger is still down must re-cross the drag threshold
+        // before it pans, or the chain lurches by however far that finger travelled while pinching.
+        const [rest] = [...pts.entries()];
+        pointerId = rest ? rest[0] : -1;
+        if (rest) {
+          startX = rest[1].x;
+          startY = lastY = rest[1].y;
+        }
+        active = false;
+        touchDragRef.current = false;
+        vel = 0;
+        pinchDist = 0;
+        return;
+      }
       if (e.pointerId !== pointerId) return;
       pointerId = -1;
       if (!active) return; // a tap — let the click/selection through
