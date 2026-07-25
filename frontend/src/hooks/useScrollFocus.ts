@@ -29,6 +29,12 @@ export interface ScrollFocus {
   velocity: number;
   /** True when parked at/near the chain tip. */
   atTip: boolean;
+  /** The rAF loop's OWN focus/zoom, updated every frame. `focusHeight`/`zoom` above are the
+   *  throttled React mirrors — they only re-render past a threshold, which is right for the chain
+   *  but wrong for anything that animates continuously off them (the backdrop's parallax). Consumers
+   *  read these from their own rAF and never re-render. Treat as read-only. */
+  focusRef: React.MutableRefObject<number>;
+  zoomRef: React.MutableRefObject<number>;
   /** Set the eased target height. ease=false snaps instantly (no glide). */
   setTarget: (h: number, ease?: boolean) => void;
   /** Move the target by a relative number of heights (keyboard nudge). */
@@ -348,5 +354,5 @@ export function useScrollFocus({
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  return { scrollRef, focusHeight, target, zoom, velocity, atTip, setTarget, nudge };
+  return { scrollRef, focusHeight, target, zoom, velocity, atTip, setTarget, nudge, focusRef, zoomRef };
 }

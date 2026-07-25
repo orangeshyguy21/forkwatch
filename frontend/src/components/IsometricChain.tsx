@@ -24,6 +24,7 @@ import { useScrollFocus } from '../hooks/useScrollFocus';
 import { useStore } from '../store';
 import type { Block, ViolationsResponse } from '../types';
 import { cleanCoinbaseTag, clsx, fmtHeight, formatBytes, formatInt, relativeTime, shortHash } from '../util';
+import { Backdrop } from './Backdrop';
 import { BottomScrubber } from './BottomScrubber';
 import { EpochRail } from './EpochRail';
 import { IsoBlock } from './IsoBlock';
@@ -283,7 +284,7 @@ export function IsometricChain() {
       ? tipHeight - 1
       : tipHeight;
 
-  const { scrollRef, focusHeight, target, zoom, velocity, atTip, setTarget, nudge } = useScrollFocus({
+  const { scrollRef, focusHeight, target, zoom, velocity, atTip, setTarget, nudge, focusRef, zoomRef } = useScrollFocus({
     tipHeight: chainTip,
     pruneFloor,
     reducedMotion,
@@ -708,6 +709,12 @@ export function IsometricChain() {
         role="application"
         aria-label="Isometric block chain"
       >
+        {/* Parallaxing backdrop, behind everything in the chain viewport (blocks sit at z 2000+).
+            Mounted here rather than at the page level on purpose: it then travels with the drawer
+            push and stays clipped to the chain window, leaving the flanking rails as chrome. It is
+            memo'd behind refs, so the per-frame re-renders of this component never reach it. */}
+        <Backdrop focusRef={focusRef} zoomRef={zoomRef} scale={scale} reducedMotion={reducedMotion} />
+
         {/* Non-desktop: chip to summon the epoch rail (top-left, opposite the HUD). */}
         {!isDesktop && chainVisible && state && (
           <button
