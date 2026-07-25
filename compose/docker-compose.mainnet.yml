@@ -41,6 +41,11 @@ services:
       - RPC_PASS=${FW_RPC_PASS:?set FW_RPC_PASS in compose/.env (see compose/.env.example)}
       - LOAD_SNAPSHOT=${FW_LOAD_SNAPSHOT:-/snapshots/utxo-840000.dat}
       - SNAPSHOT_HEIGHT=${FW_SNAPSHOT_HEIGHT:-840000}
+      # Host tuning -> /data/local.conf (entrypoint). Not in the tracked mainnet.conf, so a server can
+      # hold its own values without a dirty tree. Defaults = the repo's Tor-only posture.
+      - NODE_DBCACHE=${FW_NODE_DBCACHE:-450}
+      - NODE_ONLYNET=${FW_NODE_ONLYNET:-onion}
+      - NODE_DNSSEED=${FW_NODE_DNSSEED:-0}
     volumes:
       - core-data:/data
       - ../nodes/core/mainnet.conf:/data/bitcoin.conf:ro
@@ -70,6 +75,9 @@ services:
       - RPC_PASS=${FW_RPC_PASS:?set FW_RPC_PASS in compose/.env (see compose/.env.example)}
       - LOAD_SNAPSHOT=${FW_LOAD_SNAPSHOT:-/snapshots/utxo-840000.dat}
       - SNAPSHOT_HEIGHT=${FW_SNAPSHOT_HEIGHT:-840000}
+      - NODE_DBCACHE=${FW_NODE_DBCACHE:-450}
+      - NODE_ONLYNET=${FW_NODE_ONLYNET:-onion}
+      - NODE_DNSSEED=${FW_NODE_DNSSEED:-0}
     volumes:
       - knots-data:/data
       - ../nodes/knots/mainnet.conf:/data/bitcoin.conf:ro

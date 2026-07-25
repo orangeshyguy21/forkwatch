@@ -117,6 +117,24 @@ docker exec fw-knots-main bitcoin-cli -datadir=/data getblockchaininfo | grep -E
 docker logs -f fw-core-main   # watch sync / snapshot load
 ```
 
+### Node tuning is env-driven — never edit the tracked configs per host
+
+`dbcache`, `onlynet` and `dnsseed` are **not** set in `nodes/*/mainnet.conf`. They vary per
+deployment, and hand-editing a tracked file on a server leaves its working tree dirty so the next
+`git pull` clobbers the tuning. Set them in `compose/.env` instead — the entrypoint writes them to
+`/data/local.conf`, which the tracked conf pulls in via `includeconf` (same mechanism as the RPC
+hash):
+
+| Variable | Default | Notes |
+|---|---|---|
+| `FW_NODE_DBCACHE` | `450` | MiB. Must agree with `FW_NODE_MEM_LIMIT`. Biggest IBD lever. |
+| `FW_NODE_ONLYNET` | `onion` | `onion` (private) / `ipv4` (much faster, exposes host IP to peers) / `ipv4,onion` / empty for all. |
+| `FW_NODE_DNSSEED` | `0` | Needed to discover clearnet peers; pointless under `onlynet=onion`. |
+
+Defaults reproduce the Tor-only posture, so a fresh clone behaves as documented. For a first sync,
+a large `dbcache` plus clearnet is dramatically faster — see `compose/.env.prod.example` for the
+measured numbers and the memory caveat (sync one node at a time if you raise it far).
+
 ## Clearing the DB (for testing backfill)
 
 ```bash

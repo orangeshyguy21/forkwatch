@@ -30,6 +30,37 @@ else
 fi
 chmod 600 "$RPC_CONF"
 
+# --- Host tuning ---------------------------------------------------------------------------------
+# dbcache, onlynet and dnsseed vary per DEPLOYMENT — the box's RAM, and whether this host syncs over
+# Tor or over clearnet — so they come from the environment instead of the tracked bitcoin.conf, the
+# same split already used for the RPC hash above. That is deliberate: editing the tracked conf on a
+# server leaves its working tree dirty, and the next `git pull` either refuses or silently clobbers
+# the tuning the deployment depends on.
+#
+# Defaults reproduce the repo's privacy-first posture, so a bare clone behaves exactly as documented.
+# The file is written unconditionally (like rpc.conf) because bitcoind fails to start on an
+# includeconf it cannot read; regtest simply never includes it.
+LOCAL_CONF="$DATADIR/local.conf"
+DBCACHE="${NODE_DBCACHE:-450}"
+DNSSEED="${NODE_DNSSEED:-0}"
+# No colon in the expansion: an explicitly EMPTY NODE_ONLYNET means "write no onlynet at all", i.e.
+# let bitcoind use every reachable network. `${NODE_ONLYNET:-onion}` would swallow that and force
+# Tor, taking away the escape hatch.
+ONLYNET="${NODE_ONLYNET-onion}"
+{
+  printf 'dbcache=%s\n' "$DBCACHE"
+  printf 'dnsseed=%s\n' "$DNSSEED"
+  # onlynet is REPEATABLE, not comma-separated: bitcoind wants one line per network. Expanding a
+  # comma list here is what makes NODE_ONLYNET=ipv4,onion (clearnet speed, onion resilience) work.
+  # The trailing newline from `printf '%s\n'` is load-bearing: `read` returns false at EOF without
+  # one, so the loop would silently DROP the last network — i.e. drop the only one in the common
+  # single-value case, leaving no onlynet at all and quietly re-enabling every network including Tor.
+  printf '%s\n' "$ONLYNET" | tr ',' '\n' | while read -r net; do
+    [ -n "$net" ] && printf 'onlynet=%s\n' "$net"
+  done
+} > "$LOCAL_CONF"
+echo "[entrypoint] tuning: dbcache=$DBCACHE dnsseed=$DNSSEED onlynet=${ONLYNET:-<all networks>}"
+
 bitcoind -datadir="$DATADIR" &
 BPID=$!
 
