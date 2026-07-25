@@ -137,8 +137,6 @@ interface Plane {
   tileW: number;
   /** Fraction of the chain's own travel this plane moves — the depth cue. */
   rate: number;
-  /** Continuous drift (px/sec) so the plane still breathes when the chain is parked at the tip. */
-  drift: number;
   /** Extra scale per unit of (zoom - 1): a nearby plane pushing past you as the chain flies. */
   zoomScale: number;
   /** Radial mask, so a plane dissolves toward the edges instead of ending at them. */
@@ -156,14 +154,14 @@ const FIELD_MASK =
 // shares the screen with a countdown clock and glowing cubes that are the actual subject. Tuned so
 // the structure is legible when you look for it and invisible when you are reading the numbers.
 const LATTICE_PLANES: Plane[] = [
-  { key: 'lat-far', image: latticeTile(38, 0.03, 1), period: 38, tileW: 76, rate: 0.055, drift: 0, zoomScale: 0, mask: SPINE_MASK },
-  { key: 'lat-near', image: latticeTile(114, 0.05, 1.2), period: 114, tileW: 228, rate: 0.16, drift: 0, zoomScale: 0.012, mask: SPINE_MASK },
+  { key: 'lat-far', image: latticeTile(38, 0.03, 1), period: 38, tileW: 76, rate: 0.055, zoomScale: 0, mask: SPINE_MASK },
+  { key: 'lat-near', image: latticeTile(114, 0.05, 1.2), period: 114, tileW: 228, rate: 0.16, zoomScale: 0.012, mask: SPINE_MASK },
 ];
 
 const FIELD_PLANES: Plane[] = [
-  { key: 'fld-far', image: moteTile(1337, 300, 4, 0.85, 0.17), period: 300, tileW: 300, rate: 0.05, drift: 1.4, zoomScale: 0, mask: FIELD_MASK },
-  { key: 'fld-mid', image: moteTile(4242, 300, 3, 1.3, 0.21), period: 300, tileW: 300, rate: 0.14, drift: 2.6, zoomScale: 0.02, mask: FIELD_MASK },
-  { key: 'fld-near', image: moteTile(9001, 300, 2, 2, 0.26), period: 300, tileW: 300, rate: 0.3, drift: 4.2, zoomScale: 0.055, mask: FIELD_MASK },
+  { key: 'fld-far', image: moteTile(1337, 300, 4, 0.85, 0.17), period: 300, tileW: 300, rate: 0.05, zoomScale: 0, mask: FIELD_MASK },
+  { key: 'fld-mid', image: moteTile(4242, 300, 3, 1.3, 0.21), period: 300, tileW: 300, rate: 0.14, zoomScale: 0.02, mask: FIELD_MASK },
+  { key: 'fld-near', image: moteTile(9001, 300, 2, 2, 0.26), period: 300, tileW: 300, rate: 0.3, zoomScale: 0.055, mask: FIELD_MASK },
 ];
 
 // Film grain over the gradients. Without it the wide, very-low-contrast radials band badly on an
@@ -195,9 +193,20 @@ interface Props {
   scale: number;
   /** @see TILE_SCALE_FLOOR — the tile does NOT ride the scale all the way down. */
   reducedMotion: boolean;
+  /**
+   * Registers a per-frame callback on the scroller's rAF loop, returning an unsubscribe.
+   *
+   * This backdrop deliberately does NOT run a loop of its own. Its planes are a pure function of
+   * focus and zoom, both of which only change while that loop is awake, so a second loop could only
+   * ever poll for changes that had already happened — and, far worse, would keep asking for frames
+   * after the chain had settled. An rAF that never exits holds the whole compositor at 60fps: with
+   * these full-viewport layers on screen that measured at ~100% of a core, indefinitely, on a page
+   * nobody was touching. One loop that parks is the entire fix.
+   */
+  subscribe: (fn: () => void) => () => void;
 }
 
-function BackdropImpl({ focusRef, zoomRef, scale, reducedMotion }: Props) {
+function BackdropImpl({ focusRef, zoomRef, scale, reducedMotion, subscribe }: Props) {
   const mode = useMemo(backdropMode, []);
   const tileScale = Math.max(scale, TILE_SCALE_FLOOR);
   const planes = useMemo<Plane[]>(
@@ -214,17 +223,13 @@ function BackdropImpl({ focusRef, zoomRef, scale, reducedMotion }: Props) {
   useEffect(() => {
     // Reduced motion keeps the depth (the layers, the bloom, the grain) and drops only the movement.
     if (planes.length === 0 || reducedMotion) return;
-    let raf = 0;
-    const t0 = performance.now();
     // Last values written, so a parked chain costs one comparison per frame and zero style writes.
     const lastY = new Float64Array(planes.length).fill(NaN);
     const lastS = new Float64Array(planes.length).fill(NaN);
 
-    const tick = (now: number) => {
-      raf = requestAnimationFrame(tick);
+    const apply = () => {
       const focus = focusRef.current;
       const zoom = zoomRef.current;
-      const secs = (now - t0) / 1000;
       for (let i = 0; i < planes.length; i++) {
         const p = planes[i];
         const el = layerRefs.current[i];
@@ -234,7 +239,7 @@ function BackdropImpl({ focusRef, zoomRef, scale, reducedMotion }: Props) {
         // travel and the tile ride the scene scale, so the fraction holds at every width. Reduced
         // modulo the RENDERED tile period, the offset never grows and the pattern never jumps.
         const period = p.period * tileScale;
-        const raw = focus * PX_PER_HEIGHT * scale * p.rate + secs * p.drift;
+        const raw = focus * PX_PER_HEIGHT * scale * p.rate;
         const y = ((raw % period) + period) % period;
         const s = 1 + (zoom - 1) * p.zoomScale;
         if (y === lastY[i] && s === lastS[i]) continue;
@@ -243,9 +248,12 @@ function BackdropImpl({ focusRef, zoomRef, scale, reducedMotion }: Props) {
         el.style.transform = `translate3d(0, ${y.toFixed(2)}px, 0)${p.zoomScale ? ` scale(${s.toFixed(4)})` : ''}`;
       }
     };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [planes, scale, tileScale, reducedMotion, focusRef, zoomRef]);
+
+    // Position correctly right now (a remount, a resize or a tile change must not wait for motion),
+    // then ride the scroller's loop rather than running one of our own.
+    apply();
+    return subscribe(apply);
+  }, [planes, scale, tileScale, reducedMotion, subscribe, focusRef, zoomRef]);
 
   if (mode === 'off') return null;
 
@@ -292,13 +300,19 @@ function BackdropImpl({ focusRef, zoomRef, scale, reducedMotion }: Props) {
         </div>
       ))}
 
-      {/* Bloom on the focus anchor — the chain's own light, breathing slowly so a parked tip is
-          still alive. Sits above the planes so the lattice reads as lit near the spine. */}
+      {/* Bloom on the focus anchor — the chain's own light. Sits above the planes so the lattice
+          reads as lit near the spine.
+
+          This used to breathe on a 15s opacity cycle. It was removed rather than tuned: an infinite
+          CSS animation is compositor-driven, so it held the page at 60fps forever — and at 0.015
+          opacity per second, nothing it did between one frame and the next was visible. The static
+          value below is the midpoint of the cycle it replaces, so the bloom reads exactly as it did
+          on average, and the page is allowed to go quiet. */}
       <div
-        className={reducedMotion ? undefined : 'fw-bd-breathe'}
         style={{
           position: 'absolute',
           inset: 0,
+          opacity: 0.89,
           background: `radial-gradient(ellipse 58% 46% at 50% ${(ANCHOR * 100).toFixed(0)}%, rgba(28,191,166,0.055) 0%, rgba(20,120,110,0.02) 42%, transparent 74%)`,
         }}
       />

@@ -39,6 +39,14 @@ export interface ScrollFocus {
   setTarget: (h: number, ease?: boolean) => void;
   /** Move the target by a relative number of heights (keyboard nudge). */
   nudge: (delta: number) => void;
+  /**
+   * Register a callback on this hook's rAF loop; returns an unsubscribe. Subscribing wakes the loop
+   * for at least one frame, so a fresh subscriber always gets to initialise itself.
+   *
+   * Exists so that everything animating off `focusRef`/`zoomRef` shares ONE loop that parks when the
+   * chain settles, instead of each owning a loop that never exits. @see the park logic below.
+   */
+  subscribe: (fn: () => void) => () => void;
 }
 
 interface Params {
@@ -62,6 +70,15 @@ interface Params {
 /** Accumulated ctrl+wheel px, and log2 of accumulated pinch spread, per emitted camera step. */
 const ZOOM_WHEEL_STEP = 42;
 const ZOOM_PINCH_STEP = 0.3;
+
+/**
+ * How close the velocity and zoom springs must get before they are snapped onto their target
+ * exactly, letting the loop recognise "at rest" and park. Both sit an order of magnitude below the
+ * thresholds that push these values into React state (0.01 and 0.003), so a snap can never be the
+ * thing that produces a visible step — the render had already stopped changing well before.
+ */
+const VEL_REST_EPS = 0.0005;
+const ZOOM_REST_EPS = 0.0002;
 
 /**
  * Virtual-focus scroller. Wheel/keyboard/scrollbar set an eased `target` height;
@@ -126,6 +143,26 @@ export function useScrollFocus({
   const velPushed = useRef(velocity);
   const atTipPushed = useRef(atTip);
 
+  /**
+   * Wakes the rAF loop. Held in a ref because every input path needs it — wheel and pointer handlers
+   * live in their own effects, and `setTarget` is handed to consumers — while the loop that defines
+   * it is set up in a later effect.
+   */
+  const wakeRef = useRef<() => void>(() => {});
+  const wake = useCallback(() => wakeRef.current(), []);
+
+  const subsRef = useRef(new Set<() => void>());
+  const subscribe = useCallback(
+    (fn: () => void) => {
+      subsRef.current.add(fn);
+      wakeRef.current(); // one frame, so a subscriber mounting onto a parked chain still initialises
+      return () => {
+        subsRef.current.delete(fn);
+      };
+    },
+    [],
+  );
+
   const clampTarget = useCallback((h: number): number => {
     const tip = tipRef.current;
     const floor = floorRef.current;
@@ -143,8 +180,9 @@ export function useScrollFocus({
       settleUntilRef.current = 0;
       targetRef.current = clampTarget(h);
       if (!ease) focusRef.current = targetRef.current;
+      wake();
     },
-    [clampTarget],
+    [clampTarget, wake],
   );
 
   const nudge = useCallback(
@@ -200,6 +238,7 @@ export function useScrollFocus({
       // Reduced motion: no momentum/glide — move the target directly and let it snap.
       if (reducedRef.current) {
         targetRef.current = clampTarget(targetRef.current - raw * wheelSensRef.current * accelRef.current);
+        wake();
         return;
       }
       settleUntilRef.current = now + SCROLL_SETTLE_MS; // keep the flight live + suppress the detent
@@ -207,10 +246,11 @@ export function useScrollFocus({
       // harder as acceleration ramps; the running speed is capped so a fast fly stays controllable.
       const next = mvelRef.current - raw * wheelSensRef.current * accelRef.current;
       mvelRef.current = clamp(next, -MAX_SCROLL_SPEED, MAX_SCROLL_SPEED);
+      wake();
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [clampTarget]);
+  }, [clampTarget, wake]);
 
   // Touch/pen drag-to-pan + flick momentum. The chain is dragged 1:1 under the finger; on release
   // the recent drag velocity seeds the SAME momentum path a wheel fling uses, so friction, the
@@ -301,6 +341,7 @@ export function useScrollFocus({
       const prev = targetRef.current;
       targetRef.current = clampTarget(targetRef.current + dh);
       vel += (targetRef.current - prev - vel) * 0.4;
+      wake();
     };
     const onUp = (e: PointerEvent) => {
       const wasPinching = pts.size >= 2;
@@ -334,6 +375,7 @@ export function useScrollFocus({
         mvelRef.current = clamp(vel, -MAX_SCROLL_SPEED, MAX_SCROLL_SPEED);
         settleUntilRef.current = performance.now() + SCROLL_SETTLE_MS;
       }
+      wake(); // the fling still has to be flown out, and the detent still has to settle
     };
 
     el.addEventListener('pointerdown', onDown);
@@ -346,16 +388,37 @@ export function useScrollFocus({
       el.removeEventListener('pointerup', onUp);
       el.removeEventListener('pointercancel', onUp);
     };
-  }, [clampTarget]);
+  }, [clampTarget, wake]);
 
+  /**
+   * The scene's single rAF loop — and, crucially, one that STOPS.
+   *
+   * It parks as soon as everything is at rest (no momentum, focus sitting exactly on its detent, the
+   * zoom and velocity springs converged) and is woken by input, by a new tip, or by a new
+   * subscriber. Before this it re-registered unconditionally and so ran for as long as the page was
+   * open, whether or not anything moved.
+   *
+   * That mattered far more than it looks. A live rAF obliges the browser to produce a frame 60×/sec,
+   * and every one of those frames re-composites whatever is on screen — including the backdrop's
+   * five full-viewport layers, ~57MB of them. Profiled on an untouched page that came to ~100% of a
+   * core indefinitely, at 26fps with 98% of frames dropped; parked, the same page costs ~6%. The
+   * loop was doing no work itself. It was keeping the compositor awake, which is not the same thing
+   * as being cheap.
+   */
   useEffect(() => {
     let raf = 0;
+    let running = false;
+
     const tick = () => {
-      raf = requestAnimationFrame(tick);
       const now = performance.now();
       const tip = tipRef.current;
       const floor = floorRef.current;
-      if (tip == null || floor == null) return;
+      // Bootstrap has not landed yet: park rather than spin on it. The wake effect below fires the
+      // moment a tip arrives.
+      if (tip == null || floor == null) {
+        running = false;
+        return;
+      }
 
       // Seed once when the range first becomes known.
       if (!seededRef.current) {
@@ -410,12 +473,19 @@ export function useScrollFocus({
       // right away, and the zoom holds while the flight is sustained instead of flickering per notch.
       const rawVel = scrolling ? targetRef.current - prevTarget : focusRef.current - prevFocus;
       velRef.current += (rawVel - velRef.current) * 0.5;
+      // Both springs below approach their targets geometrically, so they get arbitrarily close and
+      // never actually arrive. Snapping the last sliver is what makes an exact at-rest state
+      // reachable at all — without it the park test can never pass and the loop runs forever, which
+      // is precisely the bug being fixed. The epsilons are far below the push thresholds further
+      // down, so nothing visible is being rounded away.
+      if (Math.abs(velRef.current) < VEL_REST_EPS) velRef.current = 0;
       const vSmoothed = velRef.current;
 
       const targetZoom = reducedRef.current ? 1 : velocityToZoom(vSmoothed);
       // Rise fast (snap out as you scroll), fall gently (ease back when you stop).
       const zLerp = targetZoom > zoomRef.current ? Math.min(1, ZOOM_LERP * 2.4) : ZOOM_LERP;
       zoomRef.current += (targetZoom - zoomRef.current) * zLerp;
+      if (Math.abs(targetZoom - zoomRef.current) < ZOOM_REST_EPS) zoomRef.current = targetZoom;
       if (reducedRef.current) zoomRef.current = 1;
 
       const nearTip = snapped >= tip;
@@ -438,10 +508,54 @@ export function useScrollFocus({
         setVelocity(vSmoothed);
         setAtTip(nearTip);
       }
+
+      // Everything reading focus/zoom off the refs — the backdrop's parallax — advances here, on this
+      // one loop, so it sleeps and wakes exactly when the chain does.
+      for (const fn of subsRef.current) fn();
+
+      const atRest =
+        !scrolling &&
+        mvelRef.current === 0 &&
+        focusRef.current === targetRef.current &&
+        zoomRef.current === targetZoom &&
+        velRef.current === 0;
+
+      if (atRest) {
+        // Flush before sleeping. The threshold above skips sub-threshold moves on the assumption
+        // that a later frame will carry them; on the last frame there is no later frame, and the
+        // remainder would sit undelivered until the next wake.
+        if (focusPushed.current !== focusRef.current || zoomPushed.current !== zoomRef.current) {
+          focusPushed.current = focusRef.current;
+          zoomPushed.current = zoomRef.current;
+          setFocusHeight(focusRef.current);
+          setZoom(zoomRef.current);
+        }
+        running = false;
+        return;
+      }
+      raf = requestAnimationFrame(tick);
     };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+
+    const start = () => {
+      if (running) return;
+      running = true;
+      raf = requestAnimationFrame(tick);
+    };
+    wakeRef.current = start;
+    start();
+    return () => {
+      cancelAnimationFrame(raf);
+      running = false;
+      wakeRef.current = () => {};
+    };
   }, []);
 
-  return { scrollRef, focusHeight, target, zoom, velocity, atTip, setTarget, nudge, focusRef, zoomRef };
+  // A new tip (or floor) needs a frame: while the user has not interacted the target is glued to the
+  // tip, so a block landing on a parked chain has to wake the loop to glide onto it. Reduced motion
+  // changes the easing, so it re-wakes too.
+  useEffect(() => {
+    wakeRef.current();
+  }, [tipHeight, pruneFloor, reducedMotion]);
+
+  return { scrollRef, focusHeight, target, zoom, velocity, atTip, setTarget, nudge, focusRef, zoomRef, subscribe };
 }

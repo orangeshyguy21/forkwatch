@@ -128,17 +128,8 @@ body {
   100% { transform: translateY(0); }                    /* elastic settle back */
 }
 
-/* ---- Backdrop: the focus bloom breathes, so a chain parked at the tip is still alive without
-   anything actually moving. Opacity only — composited, no repaint. ---- */
-.fw-bd-breathe { animation: fwBdBreathe 15s ease-in-out infinite; }
-@keyframes fwBdBreathe {
-  0%, 100% { opacity: 0.78; }
-  50%      { opacity: 1; }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .fw-loading,
-  .fw-bd-breathe,
   .fw-spawn-base,
   .fw-spawn-out,
   .fw-panel-top,

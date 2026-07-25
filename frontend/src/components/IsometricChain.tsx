@@ -306,7 +306,7 @@ export function IsometricChain() {
       ? tipHeight - 1
       : tipHeight;
 
-  const { scrollRef, focusHeight, target, zoom, velocity, atTip, setTarget, nudge, focusRef, zoomRef } = useScrollFocus({
+  const { scrollRef, focusHeight, target, zoom, velocity, atTip, setTarget, nudge, focusRef, zoomRef, subscribe } = useScrollFocus({
     tipHeight: chainTip,
     pruneFloor,
     reducedMotion,
@@ -775,7 +775,7 @@ export function IsometricChain() {
             Mounted here rather than at the page level on purpose: it then travels with the drawer
             push and stays clipped to the chain window, leaving the flanking rails as chrome. It is
             memo'd behind refs, so the per-frame re-renders of this component never reach it. */}
-        <Backdrop focusRef={focusRef} zoomRef={zoomRef} scale={scale} reducedMotion={reducedMotion} />
+        <Backdrop focusRef={focusRef} zoomRef={zoomRef} scale={scale} reducedMotion={reducedMotion} subscribe={subscribe} />
 
         {/* Non-desktop: chip to summon the epoch rail (top-left, opposite the HUD). */}
         {!isDesktop && chainVisible && state && (

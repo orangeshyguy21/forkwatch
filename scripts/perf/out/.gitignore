@@ -1,0 +1,2 @@
+# Profiler results are machine- and moment-specific — keep the harness, not its output.
+*.json
