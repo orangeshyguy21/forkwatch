@@ -79,22 +79,28 @@ function useHeldEta(
 /** Public source repository — the GitHub mark in the header links here. */
 const REPO_URL = 'https://github.com/orangeshyguy21/forkwatch';
 
-/** Brand lockup: the crest mark stacked above the FORKWATCH wordmark. Lives pinned to the header's
- *  far-left edge on desktop, and in the top row below it. The mark is decorative (aria-hidden) —
- *  the wordmark already names the app — and steps down one size on phones so the header stays lean. */
-function Brand() {
+/** Brand lockup: the crest mark stacked above the FORKWATCH wordmark. Pinned to the header's
+ *  far-left edge on desktop and tablet; on a phone it drops to `markOnly` — the wordmark is the
+ *  widest thing in the header and says nothing the crest and the tab title don't, so the mark rides
+ *  alone in the node-flanks row instead of costing a row of its own. Decorative while the wordmark
+ *  is present (that names the app); the lone mark carries the name itself. */
+function Brand({ markOnly }: { markOnly?: boolean }) {
   return (
     <span className="inline-flex select-none flex-col items-center gap-1 leading-none">
       <img
         src="/logo.svg"
-        alt=""
-        aria-hidden="true"
+        alt={markOnly ? 'Forkwatch' : ''}
+        aria-hidden={markOnly ? undefined : 'true'}
         draggable={false}
-        className="h-7 w-auto sm:h-9"
+        className={clsx('w-auto', markOnly ? 'h-8' : 'h-7 sm:h-9')}
       />
-      <span className="text-xl font-black leading-none tracking-tight text-zinc-100 sm:text-2xl">
-        FORK<span className="text-emerald-400">WATCH</span>
-      </span>
+      {/* Hidden below 768 even when the wordmark is wanted: pinned to the header's edge it is only
+          clear of the hero once there is that much width. A narrow tablet gets the mark alone. */}
+      {!markOnly && (
+        <span className="hidden text-xl font-black leading-none tracking-tight text-zinc-100 sm:text-2xl md:inline">
+          FORK<span className="text-emerald-400">WATCH</span>
+        </span>
+      )}
     </span>
   );
 }
@@ -461,7 +467,7 @@ export function Header({ state, error }: Props) {
     return (
       <header className="sticky top-0 z-30 border-b border-white/10 bg-black/70 px-5 py-4 backdrop-blur">
         <div className="pointer-events-none absolute inset-y-0 left-5 flex items-center">
-          <Brand />
+          <Brand markOnly={isPhone} />
         </div>
         <div className="absolute inset-y-0 right-5 flex items-center">
           <GithubLink />
@@ -477,31 +483,45 @@ export function Header({ state, error }: Props) {
 
   const fp = flankProps(state);
 
-  // Below desktop the wordmark and GitHub mark move OUT of their absolute pins (where they overlap
-  // the widened hero on a narrow screen) and into a real top row. Phone stacks the hero over the two
-  // flanks; tablet keeps the flanks-around-hero row, just at the compact size.
+  // Below desktop, neither the mark nor the GitHub link gets a row of its own — vertical space is
+  // the scarce axis on a phone, and that row was pure chrome. Tablet keeps the desktop's absolute
+  // pins (there is width to spare beside the centred hero); phone tucks both into the dead air
+  // flanking the two node columns, which are only ~216px of a ~390px screen.
   if (!isDesktop) {
     return (
       <header className="sticky top-0 z-30 border-b border-white/10 bg-black/70 px-4 py-2 backdrop-blur">
-        <div className="flex items-center justify-between">
-          <Brand />
-          <GithubLink />
-        </div>
-
         {isPhone ? (
           <>
             <HeroBlock hero={hero} compact />
-            <div className="mt-1 flex items-start justify-center gap-6">
-              <NodeFlank node={state.core} side="core" cls={fp.core.cls} delta={fp.core.delta} compact />
-              <NodeFlank node={state.knots} side="knots" cls={fp.knots.cls} delta={fp.knots.delta} compact />
+            <div className="mt-1 flex items-center gap-2">
+              {/* Equal fixed sides keep the flanks optically centred despite the two marks being
+                  different widths. */}
+              <div className="flex w-8 shrink-0 justify-start">
+                <Brand markOnly />
+              </div>
+              <div className="flex flex-1 items-start justify-center gap-6">
+                <NodeFlank node={state.core} side="core" cls={fp.core.cls} delta={fp.core.delta} compact />
+                <NodeFlank node={state.knots} side="knots" cls={fp.knots.cls} delta={fp.knots.delta} compact />
+              </div>
+              <div className="flex w-8 shrink-0 justify-end">
+                <GithubLink />
+              </div>
             </div>
           </>
         ) : (
-          <div className="mt-1 flex flex-wrap items-center justify-center gap-x-5 gap-y-1">
-            <NodeFlank node={state.core} side="core" cls={fp.core.cls} delta={fp.core.delta} compact />
-            <HeroBlock hero={hero} compact />
-            <NodeFlank node={state.knots} side="knots" cls={fp.knots.cls} delta={fp.knots.delta} compact />
-          </div>
+          <>
+            <div className="pointer-events-none absolute inset-y-0 left-4 z-10 flex items-center">
+              <Brand />
+            </div>
+            <div className="absolute inset-y-0 right-4 z-10 flex items-center">
+              <GithubLink />
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-1">
+              <NodeFlank node={state.core} side="core" cls={fp.core.cls} delta={fp.core.delta} compact />
+              <HeroBlock hero={hero} compact />
+              <NodeFlank node={state.knots} side="knots" cls={fp.knots.cls} delta={fp.knots.delta} compact />
+            </div>
+          </>
         )}
 
         <RaceRail state={state} />

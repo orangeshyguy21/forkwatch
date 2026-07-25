@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { EPOCH, clamp } from '../iso';
-import { fmtHeight } from '../util';
+import { clsx, fmtHeight } from '../util';
 
 interface Props {
   tip: number;
@@ -10,6 +10,9 @@ interface Props {
   dataFloor: number;
   focus: number;
   forkHeight: number | null;
+  /** Parked at the tip. The TIP button lights up to say so — on a phone this bar is the only place
+   *  that state is shown, the top-right HUD badges having been dropped there. */
+  atTip: boolean;
   onSeek: (h: number) => void;
   onTip: () => void;
   onFork: () => void;
@@ -29,6 +32,7 @@ export const BottomScrubber = memo(function BottomScrubber({
   dataFloor,
   focus,
   forkHeight,
+  atTip,
   onSeek,
   onTip,
   onFork,
@@ -89,12 +93,28 @@ export const BottomScrubber = memo(function BottomScrubber({
   const focusH = Math.round(focus);
 
   return (
-    <div className="flex shrink-0 items-center gap-2 border-t border-white/10 bg-black/60 px-3 py-2 backdrop-blur">
+    <div
+      className="flex shrink-0 items-center gap-2 border-t border-white/10 bg-black/60 backdrop-blur"
+      // Safe-area insets: the page is rendered edge-to-edge (viewport-fit=cover), so the home
+      // indicator and the landscape notch would otherwise sit on top of the track.
+      style={{
+        paddingTop: '0.5rem',
+        paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))',
+        paddingLeft: 'max(0.75rem, env(safe-area-inset-left))',
+        paddingRight: 'max(0.75rem, env(safe-area-inset-right))',
+      }}
+    >
       <button
         onClick={onTip}
         title="Jump to tip"
         aria-label="Jump to tip"
-        className="shrink-0 rounded border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 font-mono text-[11px] font-bold uppercase tracking-wider text-emerald-200 transition active:bg-emerald-500/25"
+        aria-pressed={atTip}
+        className={clsx(
+          'shrink-0 rounded border px-2.5 py-1.5 font-mono text-[11px] font-bold uppercase tracking-wider transition',
+          atTip
+            ? 'border-emerald-400/70 bg-emerald-500/25 text-emerald-100'
+            : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200 active:bg-emerald-500/25',
+        )}
       >
         Tip
       </button>

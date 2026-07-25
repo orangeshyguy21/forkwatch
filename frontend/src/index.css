@@ -13,6 +13,25 @@ body,
   height: 100%;
 }
 
+/* The app is a fixed instrument panel, not a document: nothing here is ever meant to scroll the
+   page. Saying so explicitly also kills the touch rubber-band, which on a phone dragged the header
+   half off the top of the screen. */
+html,
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* App shell height. `100vh` on mobile Safari is the URL-bar-HIDDEN viewport — taller than what is
+   actually visible — so a `h-screen` shell overflowed the window and the whole page scrolled, which
+   is what cut the clock off the top. `100dvh` is the visible height and tracks the bar collapsing;
+   the `100vh` line above it is the fallback for anything that does not know the unit. The chain
+   viewport measures itself with a ResizeObserver, so it reflows as that height changes. */
+.fw-app {
+  height: 100vh;
+  height: 100dvh;
+}
+
 body {
   margin: 0;
   background:

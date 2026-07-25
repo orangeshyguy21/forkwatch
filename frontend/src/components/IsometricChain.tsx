@@ -39,6 +39,13 @@ import { ZoomControl } from './ZoomControl';
  *  centered height number pops up — so a quick flick or a couple of notches doesn't flash it. */
 const BIG_NUM_FLY_ON = 0.16;
 const BIG_NUM_DEBOUNCE_MS = 320;
+/** Resting font size of that number, and how far it scales up at full flight. */
+const BIG_NUM_SIZE = 44;
+const BIG_NUM_MAX_SCALE = 2.5;
+/** Width of `123 456` in ems at a monospace advance of ~0.6em, with margin. Used only on a phone,
+ *  where the number is centred and so has to fit the viewport at full scale rather than trailing
+ *  off to the right of the block. */
+const BIG_NUM_EMS = 4.4;
 
 /** Chain-stretch pop: when a block lands in focus the neighbours recoil AWAY from it along the chain
  *  axis, then spring back — reading as the blockchain elastically stretching to admit the new focus,
@@ -846,6 +853,11 @@ export function IsometricChain() {
           // it has already been on screen building itself, and popping it then would read as the
           // block restarting.
           const introPop = introRun && !mat && n.height !== introH;
+          // The height label + detail readout hang off the cube's right edge, so what is left
+          // between that edge and the viewport is all the room they get. On a phone that is tens of
+          // pixels, hence the tighter gutter there as well.
+          const gutter = Math.max(isPhone ? 10 : 16, n.size * (isPhone ? 0.14 : 0.18));
+          const labelMaxWidth = Math.max(84, W - (n.x + n.size / 2 + gutter) - 10);
           return (
           <div
             key={n.key}
@@ -870,6 +882,8 @@ export function IsometricChain() {
               materialize={mat}
               stretchDy={stretchDy}
               showLabel={n.showLabel}
+              labelGutter={gutter}
+              labelMaxWidth={labelMaxWidth}
               onSelect={onSelect}
             />
           </div>
@@ -897,31 +911,64 @@ export function IsometricChain() {
           </div>
         ))}
 
-        {/* big height overlay while flying — sits to the RIGHT of the focused block (not over it),
-            vertically centered on it. Revealed only after the debounce (bigNumOn), faded in/out. */}
+        {/* Big height overlay while flying. Desktop/tablet sit it to the RIGHT of the focused block
+            (not over it), vertically centered on it — there is room out there. A phone has none: the
+            number was landing entirely off-screen, so there it is centred in the viewport instead,
+            over a soft bloom that darkens the chain behind it enough to read cleanly. Revealed only
+            after the debounce (bigNumOn), faded in/out. */}
         {flyAmt > 0.02 && !reducedMotion && (
           <div
             className="pointer-events-none absolute"
-            style={{ left: baseX + 148 * scale, top: anchorY, transform: 'translateY(-50%)' }}
+            style={
+              isPhone
+                ? { left: W / 2, top: H / 2, transform: 'translate(-50%, -50%)', zIndex: 3100 }
+                : { left: baseX + 148 * scale, top: anchorY, transform: 'translateY(-50%)' }
+            }
           >
             <div
-              className="font-mono font-black tabular-nums text-white"
+              className="relative"
               style={{
-                transformOrigin: 'left center',
-                transform: `scale(${1 + flyAmt * 1.5})`,
+                transformOrigin: isPhone ? 'center' : 'left center',
+                transform: `scale(${1 + flyAmt * (BIG_NUM_MAX_SCALE - 1)})`,
                 opacity: bigNumOn ? 0.45 + flyAmt * 0.5 : 0,
                 transition: 'opacity 160ms ease-out',
-                fontSize: 44,
-                textShadow: '0 4px 30px rgba(0,0,0,0.95)',
               }}
             >
-              {fmtHeight(bigNum)}
+              {isPhone && (
+                <div
+                  aria-hidden
+                  className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+                  style={{
+                    width: '200%',
+                    height: '420%',
+                    background:
+                      'radial-gradient(closest-side, rgba(2,6,6,0.88), rgba(2,6,6,0.55) 52%, transparent 100%)',
+                  }}
+                />
+              )}
+              <div
+                className="relative font-mono font-black tabular-nums text-white"
+                style={{
+                  // Sized so the number still fits the screen at full flight, where it is
+                  // BIG_NUM_MAX_SCALE times this.
+                  fontSize: isPhone
+                    ? Math.min(BIG_NUM_SIZE, (W - 20) / (BIG_NUM_EMS * BIG_NUM_MAX_SCALE))
+                    : BIG_NUM_SIZE,
+                  textShadow: '0 4px 30px rgba(0,0,0,0.95)',
+                }}
+              >
+                {fmtHeight(bigNum)}
+              </div>
             </div>
           </div>
         )}
 
-        {/* HUD */}
-        {chainVisible && (
+        {/* HUD — desktop and tablet only. On a phone these three badges hogged the top-right corner
+            to restate what is already on screen: the focused block prints its own height beside it,
+            and the bottom scrubber prints the focus height and lights its TIP button when parked at
+            the tip. The fly readout goes with them; the number that matters while flying is the big
+            centred one above. */}
+        {chainVisible && !isPhone && (
           <div className="pointer-events-none absolute right-4 top-4 flex flex-col items-end gap-1.5">
             <div className="rounded-md border border-white/10 bg-black/50 px-2.5 py-1 font-mono text-[11px] text-zinc-400 backdrop-blur">
               focus {fmtHeight(bigNum)}
@@ -990,6 +1037,7 @@ export function IsometricChain() {
           dataFloor={floor}
           focus={target}
           forkHeight={forked ? forkAt : null}
+          atTip={atTip}
           onSeek={seek}
           onTip={seekTip}
           onFork={seekFork}

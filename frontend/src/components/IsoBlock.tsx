@@ -30,6 +30,13 @@ interface Props {
   stretchDy?: number;
   /** Show the block's own height tick (suppressed in fork mode for a single centered label). */
   showLabel?: boolean;
+  /** Horizontal gap (px) from the cube's right edge to the height label and detail readout. The
+   *  chain owns it because it tightens below the desktop tier, where the gutter is space the
+   *  readout itself needs. */
+  labelGutter?: number;
+  /** Width (px) available to the detail readout before the viewport edge. It wraps within this
+   *  instead of running off-screen, which is what clipped `1.58 MB` on a phone. */
+  labelMaxWidth?: number;
   onSelect: (height: number) => void;
 }
 
@@ -332,6 +339,8 @@ function IsoBlockImpl({
   materialize = false,
   stretchDy = 0,
   showLabel = true,
+  labelGutter,
+  labelMaxWidth,
   onSelect,
 }: Props) {
   const loading = !block;
@@ -355,6 +364,7 @@ function IsoBlockImpl({
   const baseAt = materialize === 'intro' ? INTRO_BASE_AT : SPAWN_BASE_AT;
   const encloseAt = materialize === 'intro' ? INTRO_ENCLOSE : SPAWN_ENCLOSE;
   const labelSize = Math.max(10, Math.min(30, size * 0.16));
+  const gutter = labelGutter ?? Math.max(16, size * 0.18);
 
 
   // Mempool-style fullness: the vivid "contents" fill the shell from the base up to a waterline whose
@@ -577,7 +587,7 @@ function IsoBlockImpl({
           style={{
             left: '100%',
             top: '32%',
-            marginLeft: Math.max(16, size * 0.18),
+            marginLeft: gutter,
             fontSize: labelSize,
             textShadow: '0 1px 3px rgba(0,0,0,0.8)',
           }}
@@ -592,13 +602,17 @@ function IsoBlockImpl({
           style={{
             left: '100%',
             top: 'calc(32% + ' + Math.round(labelSize * 1.25) + 'px)',
-            marginLeft: Math.max(16, size * 0.18),
+            marginLeft: gutter,
             opacity: focusAmt,
-            minWidth: 150,
+            // The readout is as wide as it likes until the viewport edge, then wraps. Both bounds
+            // matter: without the max it ran off a phone screen mid-word ("1.58 M"), and without
+            // the min a wide screen would break the tx/size pair onto two lines for no reason.
+            minWidth: Math.min(150, labelMaxWidth ?? 150),
+            maxWidth: labelMaxWidth,
           }}
         >
-          <div className="text-[11px] text-zinc-400">{shortHash(block.hash)}</div>
-          <div className="flex gap-3 text-[10.5px] text-zinc-500">
+          <div className="truncate text-[11px] text-zinc-400">{shortHash(block.hash)}</div>
+          <div className="flex flex-wrap gap-x-3 text-[10.5px] text-zinc-500">
             <span>{formatInt(block.tx_count)} tx</span>
             <span>{formatBytes(block.size)}</span>
           </div>

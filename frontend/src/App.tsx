@@ -29,7 +29,7 @@ export default function App() {
   useChainSocket();
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden">
+    <div className="fw-app flex flex-col overflow-hidden">
       <Header state={state} error={stateError} />
       <main className="flex min-h-0 flex-1 overflow-hidden">
         <IsometricChain />
