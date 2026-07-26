@@ -661,10 +661,18 @@ export function IsometricChain() {
   // first; ignored while typing in a field). ↑/↓ step one block, PgUp/PgDn ten, Home/End jump.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (chainTip == null || pruneFloor == null) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      // Escape dismisses whatever is over the chain. Handled ahead of the tip guard below because
+      // an overlay must stay closable even while the chain has no data to navigate.
+      if (e.key === 'Escape') {
+        setSelected(null);
+        setEpochOpen(false);
+        e.preventDefault();
+        return;
+      }
+      if (chainTip == null || pruneFloor == null) return;
       switch (e.key) {
         case 'ArrowUp':
           nudge(1);
@@ -704,7 +712,7 @@ export function IsometricChain() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [chainTip, pruneFloor, nudge, setTarget, cameraStep, setCameraLevel]);
+  }, [chainTip, pruneFloor, nudge, setTarget, cameraStep, setCameraLevel, setSelected, setEpochOpen]);
 
   const bigNum = Math.round(focusHeight);
   const flyAmt = clamp((zoom - 1) / 1.3, 0, 1);
@@ -1079,8 +1087,17 @@ export function IsometricChain() {
           />
           <div
             className={clsx(
-              'absolute z-[3600]',
-              isPhone ? 'inset-x-0 bottom-0' : 'inset-y-0 left-0',
+              // The wrapper spans the whole chain area and lets clicks through to the backdrop
+              // behind it; only the drawer itself takes pointer events.
+              'pointer-events-none absolute z-[3600]',
+              // Phone: bottom-anchored, but the sheet is bounded by THIS box rather than the
+              // viewport. A `78vh` sheet is taller than the chain area whenever the header is tall
+              // (a countdown hero on a small phone) or the block has a long violations list — and
+              // because the chain area clips its overflow, what got cut off the top was the sheet's
+              // own title bar, close button and all. The viewer was then stuck with no way out but
+              // a reload. `pt-8` additionally guarantees a strip of tappable backdrop above a
+              // full-height sheet, so dismissing never depends on a single control.
+              isPhone ? 'inset-0 flex flex-col justify-end pt-8' : 'inset-y-0 left-0',
             )}
           >
             <BlockDrawer
@@ -1122,22 +1139,31 @@ function BlockDrawer({
   return (
     <div
       className={clsx(
-        'flex shrink-0 flex-col bg-black/80 backdrop-blur',
+        'pointer-events-auto flex shrink-0 flex-col bg-black/80 backdrop-blur',
         sheet
-          ? 'max-h-[78vh] w-full rounded-t-2xl border-t border-white/12'
+          ? // `max-h-full` — the sheet may take the whole box its wrapper gives it and not one pixel
+            // more, whatever the content. Its own list scrolls inside; the title bar below never
+            // moves off-screen. (It was `78vh`, measured against a viewport the sheet does not
+            // live in.)
+            'max-h-full w-full rounded-t-2xl border-t border-white/12'
           : 'h-full w-80 border-r border-white/10',
       )}
     >
       {sheet && (
-        <div className="flex justify-center pt-2.5">
+        <div className="flex shrink-0 justify-center pt-2.5">
           <span className="h-1 w-9 rounded-full bg-white/25" />
         </div>
       )}
-      <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+      <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-3">
         <div className="font-mono text-sm font-bold text-zinc-100">block {fmtHeight(height)}</div>
         <button
           onClick={onClose}
-          className="rounded px-2 py-1 text-xs text-zinc-400 hover:bg-white/10 hover:text-zinc-100"
+          aria-label="Close block details"
+          className={clsx(
+            'rounded text-xs text-zinc-400 hover:bg-white/10 hover:text-zinc-100',
+            // A comfortable touch target on the sheet — it is the primary way out.
+            sheet ? '-mr-1 px-3 py-2' : 'px-2 py-1',
+          )}
         >
           ✕ close
         </button>
