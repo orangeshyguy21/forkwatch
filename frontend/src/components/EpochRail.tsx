@@ -18,7 +18,7 @@ import { clsx, fmtHeight, formatInt, niceStep } from '../util';
  * has streamed in. For a PAST epoch there is no backend tally, so the counts are made from the
  * cached blocks themselves and dim slightly until the whole epoch has loaded.
  *
- * Retarget boundary at the top, epoch start at the bottom; in the live epoch everything above the
+ * The epoch's last block at the top, its first at the bottom; in the live epoch everything above the
  * tip is the unmined remainder, hatched. Dragging seeks the chain focus exactly like the right
  * rail, clamped to the mined stretch of the shown epoch.
  */
@@ -51,7 +51,8 @@ export const EpochRail = memo(function EpochRail({ tip, dataFloor, focus, signal
   // The epoch being detailed is the FOCUS's epoch, not the tip's.
   const start = Math.floor(clamp(focusH, 0, tip) / EPOCH) * EPOCH;
   const end = start + EPOCH; // first height of the NEXT epoch — the retarget
-  const epochHi = Math.min(tip, end - 1); // highest mined height in this epoch
+  const last = end - 1; // last block of THIS epoch — what the top marker names
+  const epochHi = Math.min(tip, last); // highest mined height in this epoch
   const isCurrent = tip < end;
 
   const railRef = useRef<HTMLDivElement>(null);
@@ -394,17 +395,21 @@ export const EpochRail = memo(function EpochRail({ tip, dataFloor, focus, signal
           </div>
         ))}
 
-        {/* retarget boundary — the top of this rail's world */}
+        {/* Epoch ceiling — the top of this rail's world. Named with the epoch's LAST block, not the
+            retarget height: everything the rail shows lives at or below this height, and the moment
+            `end` is mined the whole rail re-derives onto the next epoch, so `end` never belongs to
+            the view it would have been labelling. Mirrors the `start` footer. */}
         <div
           className="pointer-events-none absolute inset-x-0 -translate-y-1/2"
           style={{ top: `${yPx(end)}px` }}
+          title={`last block of epoch ${epochOf(start)} — ${fmtHeight(end)} retargets difficulty and opens the next epoch`}
         >
           <div className="h-px w-full bg-amber-300/35" />
           <span
             className="absolute top-1 rounded-sm bg-black/55 px-1 py-px font-mono text-[8px] uppercase tracking-wider text-amber-300/80 backdrop-blur"
             style={{ left: TRACK_INSET }}
           >
-            retarget · {fmtHeight(end)}
+            end · {fmtHeight(last)}
           </span>
         </div>
 

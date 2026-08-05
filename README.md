@@ -37,7 +37,8 @@ independently over Tor). See `PLAN.md` §10.
 
 The header's centrepiece is a countdown to `FORK_AT_HEIGHT` — on mainnet **961,632**, the
 start of BIP-110's mandatory-signaling window, from which BIP-110 nodes reject blocks that do not
-signal bit 4. On regtest it is the demo miner's staged fork height, derived per reset (see [Run the demo](#run-the-demo-regtest)).
+signal bit 4. On regtest it is the demo miner's staged fork height, pinned to that same 961,632 (see
+[Run the demo](#run-the-demo-regtest)).
 
 Estimated in `frontend/src/eta.ts`. Measuring the block rate:
 
@@ -148,48 +149,79 @@ Requires Docker (the `docker` group is active in the base shell, so plain `docke
 
 ```bash
 cd forkwatch
-bash scripts/regtest.sh reset    # wipe, rebuild the chain, start nodes + app + miner
+bash scripts/regtest.sh reset      # ONCE — mines the full chain (hours), ends with a snapshot
+bash scripts/regtest.sh restore    # thereafter — back to the parked pre-fork tip in ~20 seconds
 # → open http://localhost:8080 and watch the countdown run down to the fork
 ```
 
-The regtest chain is a **scaled mirror of the mainnet deployment**, rebuilt from scratch on every
-reset. Same structure as mainnet — floor and fork heights both on 2016-block retarget boundaries,
-a full retarget epoch of history below the fork, blocks dated an exact interval apart — with
-smaller numbers, so heights, epochs and ETAs exercise the same code paths in minutes rather than
-the ~3 hours a real 961,632-block chain would take to mine.
+The regtest chain is a **full-scale mirror of the mainnet deployment**: the same heights, on the
+same 2016-block retarget boundaries, only the clock runs faster. The fork is pinned at **961632 —
+the first block of epoch 477** (961632 = 477 × 2016) — with the app's floor 17 epochs below it at
+**927360**, exactly as configured for mainnet in `compose/.env`. Every height, epoch index and ETA
+the app computes on regtest is the literal number it will compute in production.
 
 `scripts/regtest.sh reset`:
 1. wipes the chain and the app DB, then activates RDTS on Knots and funds Core's wallet **at
    height ~450**. This is the only place funding can happen: the regtest subsidy halves every 150
    blocks and is 0 by ~4950, so a coinbase mined near the fork cannot pay for the violating tx;
-2. bulk-mines up to `FLOOR_HEIGHT` (the first retarget boundary above the activation burst) —
-   below the app's floor, so speed over fidelity;
-3. mines the visible window one block at a time, dated `BLOCK_SPACING_SECS` apart and split at the
-   Knots hashrate ratio, ending at *now*;
-4. parks the tip `LEAD_BLOCKS` below the fork and hands over to the live miner, which walks the
-   rest in real time, mines the RDTS-violating block at `FORK_AT_HEIGHT`, and then keeps **both**
-   chains advancing (Core ahead on its Knots-invalid branch, Knots on its valid minority chain).
+2. bulk-mines up to `FLOOR_HEIGHT - 1` in large batches to a wallet-less burn address (~900k
+   blocks) — below the app's floor, so speed over fidelity;
+3. mines the visible window — the floor block itself upward — one block at a time, dated
+   `BLOCK_SPACING_SECS` apart and split at the Knots hashrate ratio, ending at *now*;
+4. parks the tip `LEAD_BLOCKS` below the fork, waits for the app to finish backfilling, and saves
+   the whole thing as the `prefork` snapshot;
+5. hands over to the live miner, which walks the rest in real time, mines the RDTS-violating block
+   at `FORK_AT_HEIGHT`, and then keeps **both** chains advancing (Core ahead on its Knots-invalid
+   branch, Knots on its valid minority chain).
 
 Blocks are dated with `setmocktime`: regtest rejects timestamps >2h in the future, so a chain of
-thousands of blocks cannot be mined on the real clock at all — and dating them deliberately is what
-makes the app's spacing measurement and ETA behave as they will on mainnet.
+this size cannot be mined on the real clock at all — and dating them deliberately is what makes the
+app's spacing measurement and ETA behave as they will on mainnet. The clock is anchored so that the
+**parked tip lands at *now*** and every block below it is one `BLOCK_SPACING_SECS` earlier.
+
+### Snapshots — don't mine it twice
+
+Mining 961,632 blocks takes a couple of hours, which is the wrong thing to repeat every time you
+want to watch the fork happen. So `reset` ends by tarring the three docker volumes (both node
+datadirs and the app's SQLite, ~3.5 GB) into `snapshots/regtest/prefork/`, and `restore` puts them
+back — chain, wallets, RDTS state, backfilled database and all — in about 20 seconds.
+
+```bash
+bash scripts/regtest.sh restore              # rewind to the parked pre-fork tip; fork re-armed
+bash scripts/regtest.sh snapshot forked      # keep a post-fork state to come back to as well
+bash scripts/regtest.sh snapshots            # list them with heights and sizes
+bash scripts/regtest.sh snapshot-rm forked
+```
+
+The stack is stopped for the duration of both operations: copying a live bitcoind datadir captures
+leveldb mid-write, and the node that comes back from that tarball is corrupt in ways that only
+surface later. One caveat on `restore` — the restored tip is dated when the snapshot was *taken*,
+but the miner resumes on the real clock, so a day-old snapshot leaves one outsized gap between the
+parked tip and the first live block. `restore` says so when it notices.
 
 ### Tuning it
 
-All parameters live in **`compose/regtest.env`** — block spacing, lead window, visible epochs,
-Knots hashrate, violation size. Edit and re-reset, or override per run:
+All parameters live in **`compose/regtest.env`** — fork height, block spacing, lead window, visible
+epochs, Knots hashrate, violation size. Edit and re-reset, or override per run:
 
 ```bash
-bash scripts/regtest.sh reset LEAD_BLOCKS=20 BLOCK_SPACING_SECS=5   # a fork in ~2 minutes
-bash scripts/regtest.sh reset KNOTS_PER_100=10                      # 10% BIP-110 hashrate
-bash scripts/regtest.sh status                                      # heights, RDTS, countdown, params
-bash scripts/regtest.sh fork-now                                    # stop waiting; fork at the next block
-bash scripts/regtest.sh logs                                        # follow the miner
+bash scripts/regtest.sh reset FORK_AT_HEIGHT=0 VISIBLE_EPOCHS=2      # quick ~6k-block throwaway chain
+bash scripts/regtest.sh reset LEAD_BLOCKS=20 BLOCK_SPACING_SECS=5    # a fork ~2 minutes after restore
+bash scripts/regtest.sh reset KNOTS_PER_100=10                       # 10% BIP-110 hashrate
+bash scripts/regtest.sh status                                       # heights, RDTS, countdown, params
+bash scripts/regtest.sh fork-now                                     # stop waiting; fork at the next block
+bash scripts/regtest.sh logs                                         # follow the miner
 ```
 
-`FORK_AT_HEIGHT` and `FLOOR_HEIGHT` are **derived** by the reset (RDTS activation lands on an
-unpredictable height; both are the retarget boundaries above it) and written to
-`compose/.regtest.runtime.env`, which the compose file reads.
+`FORK_AT_HEIGHT` must be a multiple of `RETARGET_INTERVAL` — the build refuses a value that would
+fork mid-epoch rather than discovering it two hours in. Setting it to **0** restores the old
+behavior: derive both heights from wherever RDTS activation happened to land, giving a chain that
+resets in a couple of minutes when you are iterating on something that is not height-dependent.
+`FLOOR_HEIGHT` is always derived (`FORK_AT_HEIGHT - VISIBLE_EPOCHS × RETARGET_INTERVAL`) and written
+to `compose/.regtest.runtime.env`, which the compose file reads.
+
+Note that `fork-now` moves the fork to the current tip, so it trades the pinned 961632 for
+immediacy. To keep the real height and still shorten the wait, reset with a smaller `LEAD_BLOCKS`.
 
 > **Known mirror gap:** the signaling gauge reads 0% on regtest. BIP9 blocks stop setting the
 > version bit once a deployment is ACTIVE, and RDTS has to be active for Knots to enforce it and
